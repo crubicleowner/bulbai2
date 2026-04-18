@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-import sys
 from typing import Final
 
 _BANNER_SUFFIX: Final[str] = "STL-first vertical slice"
@@ -13,8 +13,14 @@ def _package_identity() -> tuple[str, str]:
     except ModuleNotFoundError as exc:
         if exc.name != "bulbopt":
             raise
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from bulbopt import PACKAGE_NAME, __version__
+        package_init = Path(__file__).resolve().parents[1] / "__init__.py"
+        spec = spec_from_file_location("_bulbopt_metadata", package_init)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Unable to load BulbOpt package metadata")
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+        PACKAGE_NAME = module.PACKAGE_NAME
+        __version__ = module.__version__
 
     return PACKAGE_NAME, __version__
 
