@@ -27,8 +27,7 @@ def _package_identity() -> tuple[str, str]:
 
 
 def build_cli_banner() -> str:
-    package_name, version = _package_identity()
-    return f"{package_name} {version} | {_BANNER_SUFFIX}"
+    return "BulbOpt Desktop | STL-first vertical slice"
 
 
 def run_desktop() -> int:
