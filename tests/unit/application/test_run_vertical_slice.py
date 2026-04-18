@@ -67,3 +67,30 @@ def test_run_vertical_slice_fails_fast_when_no_candidates_are_evaluated(
                 speed_knots=[18.0, 20.0],
             ),
         )
+
+
+def test_run_vertical_slice_preserves_binary_stl_input(tmp_path: Path) -> None:
+    source_path = tmp_path / "binary-demo.stl"
+    binary_stl = (
+        (b"Binary STL demo" + b"\xff\xfe\xfa" + b"\x00" * 62)[:80]
+        + (1).to_bytes(4, byteorder="little")
+        + (b"\x80" * 50)
+    )
+    source_path.write_bytes(binary_stl)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="binary-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    repaired_path = tmp_path / "projects" / summary.case_id / "working" / "repaired" / "repaired.stl"
+
+    assert repaired_path.read_bytes() == binary_stl

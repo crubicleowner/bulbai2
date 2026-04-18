@@ -6,7 +6,7 @@ from pathlib import Path
 class StubGeometryAdapter:
     def prepare_geometry(self, case_dir: Path, source_path: Path) -> dict:
         repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
-        repaired_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+        repaired_path.write_bytes(source_path.read_bytes())
         return {
             "quality_report": {"watertight": False, "repaired": True},
             "repaired_path": str(repaired_path),
