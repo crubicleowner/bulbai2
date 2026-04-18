@@ -1,0 +1,10 @@
+.worktrees/
+__pycache__/
+.pytest_cache/
+.venv/
+dist/
+build/
+*.pyc
+*.pyo
+*.pyd
+bulbopt_projects/
