@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bulbopt-desktop"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Desktop tool for bulbous bow generation and optimization"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,6 +21,9 @@ dependencies = [
 dev = [
   "pytest>=8.3",
 ]
+
+[tool.setuptools.dynamic]
+version = {attr = "bulbopt.__version__"}
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
