@@ -8,7 +8,7 @@ from bulbopt.app.main import build_cli_banner
 
 def test_build_cli_banner_and_direct_entry_are_consistent() -> None:
     banner = build_cli_banner()
-    expected_banner = f"{PACKAGE_NAME} {__version__} | STL-first vertical slice"
+    expected_banner = "BulbOpt Desktop | STL-first vertical slice"
 
     assert banner == expected_banner
 
