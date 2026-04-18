@@ -8,7 +8,14 @@ version = "0.1.0"
 description = "Desktop tool for bulbous bow generation and optimization"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "jinja2>=3.1",
+  "numpy>=2.2",
+  "PySide6>=6.8",
+  "pymeshfix>=0.17",
+  "pyvista>=0.44",
+  "trimesh>=4.6",
+]
 
 [project.optional-dependencies]
 dev = [
