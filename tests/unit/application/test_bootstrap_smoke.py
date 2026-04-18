@@ -2,7 +2,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-from bulbopt import PACKAGE_NAME, __version__
 from bulbopt.app.main import build_cli_banner
 
 
