@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+import sys
 from typing import Final
 
 _BANNER_SUFFIX: Final[str] = "STL-first vertical slice"
@@ -28,6 +29,17 @@ def _package_identity() -> tuple[str, str]:
 def build_cli_banner() -> str:
     package_name, version = _package_identity()
     return f"{package_name} {version} | {_BANNER_SUFFIX}"
+
+
+def run_desktop() -> int:
+    from PySide6.QtWidgets import QApplication
+
+    from bulbopt.ui.desktop.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = MainWindow(project_root=Path("bulbopt_projects"))
+    window.show()
+    return app.exec()
 
 
 if __name__ == "__main__":
