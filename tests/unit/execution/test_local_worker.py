@@ -2,17 +2,18 @@
 
 from pathlib import Path
 
+from bulbopt.execution.checkpoints.file_checkpoint_store import FileCheckpointStore
 from bulbopt.execution.worker.local_worker import LocalWorker
 
 
 def test_local_worker_success_returns_job_result_and_writes_checkpoint(tmp_path: Path) -> None:
-    worker_root = tmp_path / "case-001"
-    worker = LocalWorker(root_dir=worker_root)
+    checkpoints = FileCheckpointStore(root_dir=tmp_path)
+    worker = LocalWorker(checkpoint_store=checkpoints)
 
     result = worker.run("case-001", "stage-1", lambda: {"status": "ok"})
 
     assert result == {"status": "ok"}
-    checkpoint_path = worker_root / "working" / "checkpoints" / "case-001-stage-1.json"
+    checkpoint_path = tmp_path / "case-001-stage-1.json"
     assert checkpoint_path.exists()
     assert checkpoint_path.read_text(encoding="utf-8").strip() == (
         '{\n'
@@ -27,8 +28,8 @@ def test_local_worker_success_returns_job_result_and_writes_checkpoint(tmp_path:
 def test_local_worker_failure_returns_recoverable_payload_and_writes_checkpoint(
     tmp_path: Path,
 ) -> None:
-    worker_root = tmp_path / "case-001"
-    worker = LocalWorker(root_dir=worker_root)
+    checkpoints = FileCheckpointStore(root_dir=tmp_path)
+    worker = LocalWorker(checkpoint_store=checkpoints)
 
     def job() -> None:
         raise RuntimeError("boom")
@@ -36,7 +37,7 @@ def test_local_worker_failure_returns_recoverable_payload_and_writes_checkpoint(
     result = worker.run("case-001", "stage-1", job)
 
     assert result == {"status": "failed", "error": "boom", "is_recoverable": True}
-    checkpoint_path = worker_root / "working" / "checkpoints" / "case-001-stage-1.json"
+    checkpoint_path = tmp_path / "case-001-stage-1.json"
     assert checkpoint_path.exists()
     assert checkpoint_path.read_text(encoding="utf-8").strip() == (
         '{\n'
