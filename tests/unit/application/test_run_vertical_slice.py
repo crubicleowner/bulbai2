@@ -33,7 +33,8 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert summary.case_name == "dtmb-demo"
     assert summary.status == "completed"
     assert summary.best_candidate_id == "candidate-3"
-    assert case_payload["status"] == "imported"
+    assert case_payload["status"] == "completed"
+    assert case_payload["is_recoverable"] is False
     assert len(candidate_index) == 3
     assert report_path.exists()
     assert "candidate-3" in report_path.read_text(encoding="utf-8")
