@@ -29,6 +29,10 @@ class FilesystemProjectRepository:
         self.json_store.write(case_dir / "evaluation_index.json", [])
         return case_dir
 
+    def save_case(self, case: OptimizationCase) -> None:
+        case_dir = self._require_existing_case(case.case_id)
+        self.json_store.write(case_dir / "case.json", self._case_payload(case))
+
     def save_candidate_index(self, case_id: str, payload: list[dict[str, Any]]) -> None:
         case_dir = self._require_existing_case(case_id)
         self.json_store.write(case_dir / "candidate_index.json", payload)

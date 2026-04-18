@@ -4,6 +4,7 @@ from pathlib import Path
 
 from bulbopt.application.contracts.models import CaseSummary, CreateCaseCommand
 from bulbopt.application.use_cases.create_case import create_case
+from bulbopt.domain.core.models import CaseStatus
 from bulbopt.infrastructure.adapters.html_report import HtmlReportAdapter
 from bulbopt.infrastructure.adapters.stub_evaluation import StubEvaluationAdapter
 from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
@@ -30,6 +31,8 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
     evaluated_candidates = evaluation.evaluate_candidates(candidates)
     json_store.write(case_dir / "evaluation_index.json", evaluated_candidates)
     best_candidate = optimization.choose_best(evaluated_candidates)
+    case.status = CaseStatus.ASSEMBLING_RESULTS
+    repository.save_case(case)
     report.build_html_report(
         case_dir,
         {
@@ -40,11 +43,14 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
             "high_fidelity_used": False,
         },
     )
+    case.status = CaseStatus.COMPLETED
+    case.is_recoverable = False
+    repository.save_case(case)
 
     return CaseSummary(
         case_id=case.case_id,
         case_name=case.case_name,
-        status="completed",
+        status=case.status.value,
         best_candidate_id=best_candidate["candidate_id"],
     )
 

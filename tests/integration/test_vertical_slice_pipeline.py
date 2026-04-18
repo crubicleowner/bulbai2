@@ -1,6 +1,7 @@
 ﻿from pathlib import Path
 
 from bulbopt.app.bootstrap import bootstrap_application
+from bulbopt.storage.filesystem.json_store import JsonStore
 
 
 def test_bootstrap_application_runs_vertical_slice_and_writes_report(
@@ -27,7 +28,10 @@ def test_bootstrap_application_runs_vertical_slice_and_writes_report(
     )
 
     case_dirs = list(project_root.iterdir())
+    case_payload = JsonStore().read(case_dirs[0] / "case.json")
 
     assert summary.status == "completed"
     assert len(case_dirs) == 1
     assert (case_dirs[0] / "outputs" / "reports" / "report.html").exists()
+    assert case_payload["status"] == "completed"
+    assert case_payload["is_recoverable"] is False
