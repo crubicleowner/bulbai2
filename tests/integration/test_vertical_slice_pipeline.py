@@ -62,7 +62,7 @@ def test_repository_create_case_rolls_back_when_initial_write_fails(tmp_path: Pa
 
 
 
-def test_vertical_slice_builds_report_from_persisted_completed_status(
+def test_vertical_slice_builds_report_from_persisted_assembling_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -91,5 +91,5 @@ def test_vertical_slice_builds_report_from_persisted_completed_status(
         speed_knots=[18.0, 20.0],
     )
 
-    assert captured_statuses["persisted_status"] == "completed"
+    assert captured_statuses["persisted_status"] == "assembling_results"
     assert captured_statuses["report_status"] == "completed"
