@@ -18,6 +18,8 @@ class FilesystemProjectRepository:
 
     def create_case(self, case: OptimizationCase) -> Path:
         case_dir = self.case_dir(case.case_id)
+        if case_dir.exists():
+            raise FileExistsError(f"Case already exists: {case.case_id}")
         self._create_case_tree(case_dir)
         self.json_store.write(case_dir / "case.json", self._case_payload(case))
         self.json_store.write(case_dir / "metadata.json", {})
@@ -27,7 +29,8 @@ class FilesystemProjectRepository:
         return case_dir
 
     def save_candidate_index(self, case_id: str, payload: list[dict[str, Any]]) -> None:
-        self.json_store.write(self.case_dir(case_id) / "candidate_index.json", payload)
+        case_dir = self._require_existing_case(case_id)
+        self.json_store.write(case_dir / "candidate_index.json", payload)
 
     def _create_case_tree(self, case_dir: Path) -> None:
         for relative_path in [
@@ -49,3 +52,14 @@ class FilesystemProjectRepository:
         payload = asdict(case)
         payload["status"] = case.status.value
         return payload
+
+    def _require_existing_case(self, case_id: str) -> Path:
+        case_dir = self.case_dir(case_id)
+        if not case_dir.exists():
+            raise FileNotFoundError(f"Case directory does not exist: {case_id}")
+
+        case_json = case_dir / "case.json"
+        if not case_json.exists():
+            raise FileNotFoundError(f"Missing case metadata: {case_json}")
+
+        return case_dir

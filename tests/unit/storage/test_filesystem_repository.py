@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from bulbopt.domain.core.models import OptimizationCase
 from bulbopt.storage.project_repository.filesystem_repository import FilesystemProjectRepository
 
@@ -33,3 +35,22 @@ def test_repository_saves_candidate_index(tmp_path: Path) -> None:
     payload = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
     assert payload[0]["candidate_id"] == "cand-1"
     assert payload[0]["status"] == "generated"
+
+
+def test_create_case_rejects_existing_case_folder(tmp_path: Path) -> None:
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+    case = OptimizationCase.new(case_id="case-001", case_name="demo")
+
+    repository.create_case(case)
+
+    with pytest.raises(FileExistsError, match="case-001"):
+        repository.create_case(case)
+
+
+def test_save_candidate_index_rejects_missing_case_metadata(tmp_path: Path) -> None:
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+    case_dir = tmp_path / "case-001"
+    case_dir.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="case.json"):
+        repository.save_candidate_index("case-001", [{"candidate_id": "cand-1"}])
