@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from bulbopt.execution.checkpoints.file_checkpoint_store import FileCheckpointStore
@@ -15,14 +16,11 @@ def test_local_worker_success_returns_job_result_and_writes_checkpoint(tmp_path:
     assert result == {"status": "ok"}
     checkpoint_path = tmp_path / "case-001-stage-1.json"
     assert checkpoint_path.exists()
-    assert checkpoint_path.read_text(encoding="utf-8").strip() == (
-        '{\n'
-        '  "status": "completed",\n'
-        '  "result": {\n'
-        '    "status": "ok"\n'
-        '  }\n'
-        '}'
-    )
+    checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint_payload == {
+        "status": "completed",
+        "result": {"status": "ok"},
+    }
 
 
 def test_local_worker_failure_returns_recoverable_payload_and_writes_checkpoint(
@@ -39,10 +37,9 @@ def test_local_worker_failure_returns_recoverable_payload_and_writes_checkpoint(
     assert result == {"status": "failed", "error": "boom", "is_recoverable": True}
     checkpoint_path = tmp_path / "case-001-stage-1.json"
     assert checkpoint_path.exists()
-    assert checkpoint_path.read_text(encoding="utf-8").strip() == (
-        '{\n'
-        '  "status": "failed",\n'
-        '  "error": "boom",\n'
-        '  "is_recoverable": true\n'
-        '}'
-    )
+    checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint_payload == {
+        "status": "failed",
+        "error": "boom",
+        "is_recoverable": True,
+    }
