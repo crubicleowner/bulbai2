@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import shutil
 from typing import Any
 
 from bulbopt.domain.core.models import OptimizationCase
@@ -21,12 +22,16 @@ class FilesystemProjectRepository:
         case_dir = self.case_dir(case.case_id)
         if case_dir.exists():
             raise FileExistsError(f"Case already exists: {case.case_id}")
-        self._create_case_tree(case_dir)
-        self.json_store.write(case_dir / "case.json", self._case_payload(case))
-        self.json_store.write(case_dir / "metadata.json", {})
-        self.json_store.write(case_dir / "artifacts_index.json", {})
-        self.json_store.write(case_dir / "candidate_index.json", [])
-        self.json_store.write(case_dir / "evaluation_index.json", [])
+        try:
+            self._create_case_tree(case_dir)
+            self.json_store.write(case_dir / "case.json", self._case_payload(case))
+            self.json_store.write(case_dir / "metadata.json", {})
+            self.json_store.write(case_dir / "artifacts_index.json", {})
+            self.json_store.write(case_dir / "candidate_index.json", [])
+            self.json_store.write(case_dir / "evaluation_index.json", [])
+        except Exception:
+            shutil.rmtree(case_dir, ignore_errors=True)
+            raise
         return case_dir
 
     def save_case(self, case: OptimizationCase) -> None:

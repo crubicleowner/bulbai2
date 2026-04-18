@@ -33,19 +33,19 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
     best_candidate = optimization.choose_best(evaluated_candidates)
     case.status = CaseStatus.ASSEMBLING_RESULTS
     repository.save_case(case)
+    case.status = CaseStatus.COMPLETED
+    case.is_recoverable = False
+    repository.save_case(case)
     report.build_html_report(
         case_dir,
         {
             "case_name": case.case_name,
-            "status": "completed",
+            "status": case.status.value,
             "best_candidate_id": best_candidate["candidate_id"],
             "openfoam_available": False,
             "high_fidelity_used": False,
         },
     )
-    case.status = CaseStatus.COMPLETED
-    case.is_recoverable = False
-    repository.save_case(case)
 
     return CaseSummary(
         case_id=case.case_id,
