@@ -1,10 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
-from uuid import uuid4
 
 from bulbopt.application.contracts.models import CaseSummary, CreateCaseCommand
-from bulbopt.domain.core.models import CaseStatus, OptimizationCase
+from bulbopt.application.use_cases.create_case import create_case
 from bulbopt.infrastructure.adapters.html_report import HtmlReportAdapter
 from bulbopt.infrastructure.adapters.stub_evaluation import StubEvaluationAdapter
 from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
@@ -16,10 +15,8 @@ from bulbopt.storage.project_repository.filesystem_repository import FilesystemP
 def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSummary:
     repository = FilesystemProjectRepository(root_dir=project_root)
     json_store = JsonStore()
-    case = OptimizationCase.new(case_id=f"case-{uuid4().hex[:8]}", case_name=command.case_name)
-    case.source_path = command.source_path
-    case.status = CaseStatus.IMPORTED
-    case_dir = repository.create_case(case)
+    case = create_case(command=command, repository=repository)
+    case_dir = repository.case_dir(case.case_id)
 
     geometry = StubGeometryAdapter()
     evaluation = StubEvaluationAdapter()
