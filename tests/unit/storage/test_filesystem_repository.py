@@ -54,3 +54,11 @@ def test_save_candidate_index_rejects_missing_case_metadata(tmp_path: Path) -> N
 
     with pytest.raises(FileNotFoundError, match="case.json"):
         repository.save_candidate_index("case-001", [{"candidate_id": "cand-1"}])
+
+
+def test_create_case_rejects_path_traversal_case_id(tmp_path: Path) -> None:
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+    case = OptimizationCase.new(case_id="../escape", case_name="demo")
+
+    with pytest.raises(ValueError, match="case_id"):
+        repository.create_case(case)

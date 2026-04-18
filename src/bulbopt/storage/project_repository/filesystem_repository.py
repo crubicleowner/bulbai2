@@ -14,6 +14,7 @@ class FilesystemProjectRepository:
         self.json_store = json_store or JsonStore()
 
     def case_dir(self, case_id: str) -> Path:
+        self._validate_case_id(case_id)
         return self.root_dir / case_id
 
     def create_case(self, case: OptimizationCase) -> Path:
@@ -63,3 +64,12 @@ class FilesystemProjectRepository:
             raise FileNotFoundError(f"Missing case metadata: {case_json}")
 
         return case_dir
+
+    def _validate_case_id(self, case_id: str) -> None:
+        case_path = Path(case_id)
+        if case_path.is_absolute():
+            raise ValueError(f"Invalid case_id: {case_id}")
+
+        parts = case_path.parts
+        if len(parts) != 1 or parts[0] in {".", ".."}:
+            raise ValueError(f"Invalid case_id: {case_id}")
