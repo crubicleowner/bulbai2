@@ -2,15 +2,23 @@ import json
 from pathlib import Path
 
 import pytest
+import trimesh
 
 from bulbopt.application.contracts.models import CreateCaseCommand
 from bulbopt.application.use_cases import run_vertical_slice as run_vertical_slice_module
 from bulbopt.application.use_cases.run_vertical_slice import run_vertical_slice
 
 
+def _write_valid_stl(path: Path) -> bytes:
+    mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
+    stl_bytes = trimesh.exchange.stl.export_stl(mesh)
+    path.write_bytes(stl_bytes)
+    return stl_bytes
+
+
 def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -> None:
     source_path = tmp_path / "demo.stl"
-    source_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+    _write_valid_stl(source_path)
 
     summary = run_vertical_slice(
         project_root=tmp_path / "projects",
@@ -27,6 +35,9 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
 
     case_dir = tmp_path / "projects" / summary.case_id
     candidate_index = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
+    geometry_analysis = json.loads(
+        (case_dir / "working" / "repaired" / "geometry_analysis.json").read_text(encoding="utf-8")
+    )
     report_path = case_dir / "outputs" / "reports" / "report.html"
     case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
     metadata_payload = json.loads((case_dir / "metadata.json").read_text(encoding="utf-8"))
@@ -39,6 +50,11 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert metadata_payload["create_case_command"]["speed_knots"] == [18.0, 20.0]
     assert metadata_payload["create_case_command"]["runtime_budget_hours"] == 8
     assert len(candidate_index) == 3
+    assert geometry_analysis["quality_report"]["vertices_count"] > 0
+    assert geometry_analysis["quality_report"]["faces_count"] > 0
+    assert geometry_analysis["quality_report"]["primary_axis"] == 0
+    assert geometry_analysis["bulb_region"]["axis_max"] > geometry_analysis["bulb_region"]["axis_min"]
+    assert (case_dir / "working" / "repaired" / "repaired.stl").exists()
     assert report_path.exists()
     assert "candidate-3" in report_path.read_text(encoding="utf-8")
 
@@ -47,7 +63,7 @@ def test_run_vertical_slice_fails_fast_when_no_candidates_are_evaluated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_path = tmp_path / "demo.stl"
-    source_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+    _write_valid_stl(source_path)
 
     def return_empty_results(self, candidates: list[dict]) -> list[dict]:
         return []
@@ -108,6 +124,40 @@ def test_run_vertical_slice_preserves_binary_stl_input(tmp_path: Path) -> None:
     assert repaired_path.read_bytes() == binary_stl
 
 
+def test_run_vertical_slice_generates_distinct_candidate_meshes(tmp_path: Path) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="candidate-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
+    candidate_paths = [
+        case_dir / "working" / "candidates" / "candidate-1.stl",
+        case_dir / "working" / "candidates" / "candidate-2.stl",
+        case_dir / "working" / "candidates" / "candidate-3.stl",
+    ]
+
+    repaired_bytes = repaired_path.read_bytes()
+    candidate_bytes = [path.read_bytes() for path in candidate_paths]
+
+    assert all(path.exists() for path in candidate_paths)
+    assert all(data for data in candidate_bytes)
+    assert any(data != repaired_bytes for data in candidate_bytes)
+    assert len({data for data in candidate_bytes}) == 3
+
+
 def test_run_vertical_slice_marks_case_failed_when_source_stl_is_missing(
     tmp_path: Path,
 ) -> None:
@@ -142,7 +192,7 @@ def test_run_vertical_slice_marks_case_failed_when_source_stl_is_unreadable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source_path = tmp_path / "demo.stl"
-    source_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+    _write_valid_stl(source_path)
     project_root = tmp_path / "projects"
     original_read_bytes = Path.read_bytes
 

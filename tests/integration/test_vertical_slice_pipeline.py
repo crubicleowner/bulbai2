@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import trimesh
 
 from bulbopt.app.bootstrap import bootstrap_application
 from bulbopt.domain.core.models import OptimizationCase
@@ -9,11 +10,16 @@ from bulbopt.storage.filesystem.json_store import JsonStore
 from bulbopt.storage.project_repository.filesystem_repository import FilesystemProjectRepository
 
 
+def _write_valid_stl(path: Path) -> None:
+    mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
+    path.write_bytes(trimesh.exchange.stl.export_stl(mesh))
+
+
 def test_bootstrap_application_runs_vertical_slice_and_writes_report(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "demo.stl"
-    source_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+    _write_valid_stl(source_path)
 
     project_root = tmp_path / "projects"
     app = bootstrap_application(project_root=project_root)
@@ -67,7 +73,7 @@ def test_vertical_slice_builds_report_from_persisted_assembling_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source_path = tmp_path / "demo.stl"
-    source_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+    _write_valid_stl(source_path)
     project_root = tmp_path / "projects"
     app = bootstrap_application(project_root=project_root)
     captured_statuses: dict[str, str] = {}
