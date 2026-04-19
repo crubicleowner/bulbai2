@@ -45,6 +45,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
         execution_summary = central_widget.findChild(QLabel, "execution_summary_label")
         weights_summary = central_widget.findChild(QLabel, "weights_summary_label")
+        hydrostatics_summary = central_widget.findChild(QLabel, "hydrostatics_summary_label")
         optimization_summary = central_widget.findChild(QLabel, "optimization_summary_label")
         candidates_summary = central_widget.findChild(QLabel, "candidates_summary_label")
         candidates_list = central_widget.findChild(QListWidget, "candidates_list_widget")
@@ -63,6 +64,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert evaluation_summary is not None
         assert execution_summary is not None
         assert weights_summary is not None
+        assert hydrostatics_summary is not None
         assert optimization_summary is not None
         assert candidates_summary is not None
         assert candidates_list is not None
@@ -79,6 +81,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert "not available" in evaluation_summary.text()
         assert "not available" in execution_summary.text()
         assert "not available" in weights_summary.text()
+        assert "not available" in hydrostatics_summary.text()
         assert "not available" in optimization_summary.text()
         assert "not available" in candidates_summary.text()
         assert candidates_list.count() == 0
@@ -169,6 +172,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
                 "evaluation": "Evaluation summary: cand-1 fast=1.0 mid=9.0 resistance=4.08",
                 "execution": "Execution summary: runtime=8 h candidates=3 processed=3",
                 "weights": "Objective weights: resistance=1.0 axial=0.8 draft=0.1 beam=0.05",
+                "hydrostatics": "Hydrostatics-lite: volume_delta=1.2% draft_delta=0.03 penalty=0.18",
                 "optimization": "Optimization summary: best=cand-1 ranked=3 spread=2.0",
                 "candidates": "Candidates: cand-1 mid=9.0 | cand-2 mid=8.0 | cand-3 mid=7.0",
                 "candidate_rows": [
@@ -190,6 +194,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
         execution_summary = central_widget.findChild(QLabel, "execution_summary_label")
         weights_summary = central_widget.findChild(QLabel, "weights_summary_label")
+        hydrostatics_summary = central_widget.findChild(QLabel, "hydrostatics_summary_label")
         optimization_summary = central_widget.findChild(QLabel, "optimization_summary_label")
         candidates_summary = central_widget.findChild(QLabel, "candidates_summary_label")
         candidates_list = central_widget.findChild(QListWidget, "candidates_list_widget")
@@ -204,6 +209,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert evaluation_summary is not None
         assert execution_summary is not None
         assert weights_summary is not None
+        assert hydrostatics_summary is not None
         assert optimization_summary is not None
         assert candidates_summary is not None
         assert candidates_list is not None
@@ -227,6 +233,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert "runtime=8 h" in execution_summary.text()
         assert "processed=3" in execution_summary.text()
         assert "axial=0.8" in weights_summary.text()
+        assert "volume_delta=1.2%" in hydrostatics_summary.text()
         assert "best=cand-1" in optimization_summary.text()
         assert "ranked=3" in optimization_summary.text()
         assert "cand-2" in candidates_summary.text()
@@ -392,6 +399,7 @@ def test_main_window_loads_case_results_from_case_summary_metrics(
                 '"summary_metrics":{'
                 '"geometry":{"vertices_count":999,"faces_count":111,"watertight":true,"primary_axis":0,"slenderness_ratio":6.2},'
                 '"evaluation":{"best_candidate_id":"candidate-9","fast_score":0.2,"mid_score":1.5,"resistance_proxy":3.14},'
+                '"hydrostatics":{"volume_delta_pct":1.1,"draft_delta_m":0.02,"hydrostatic_penalty":0.15},'
                 '"execution":{"runtime_budget_hours":7,"candidate_count":4,"processed_candidates":4},'
                 '"objective_weights":{"resistance_weight":1.1,"axial_gain_weight":0.3,"draft_reduction_weight":0.05,"beam_growth_weight":0.2},'
                 '"optimization":{"best_candidate_id":"candidate-9","ranked_count":4,"mid_score_spread":0.8},'
@@ -413,6 +421,8 @@ def test_main_window_loads_case_results_from_case_summary_metrics(
         assert "processed=4" in results["execution"]
         assert "resistance=1.1" in results["weights"]
         assert "beam=0.2" in results["weights"]
+        assert "volume_delta=1.1%" in results["hydrostatics"]
+        assert "penalty=0.15" in results["hydrostatics"]
         assert "best=candidate-9" in results["optimization"]
         assert "ranked=4" in results["optimization"]
         assert "spread=0.8" in results["optimization"]

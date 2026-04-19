@@ -107,6 +107,7 @@ def _build_case_summary_metrics(
 ) -> dict:
     quality_report = geometry_analysis.get("quality_report", {})
     geometry_metrics = best_candidate.get("geometry_metrics", {})
+    hydrostatics_metrics = best_candidate.get("hydrostatics_metrics", {})
     score_components = best_candidate.get("score_components", {})
     candidate_rows = [
         (
@@ -137,6 +138,11 @@ def _build_case_summary_metrics(
             "fast_score": best_candidate.get("fast_score"),
             "mid_score": best_candidate.get("mid_score"),
             "resistance_proxy": score_components.get("resistance_proxy"),
+        },
+        "hydrostatics": {
+            "volume_delta_pct": hydrostatics_metrics.get("volume_delta_pct"),
+            "draft_delta_m": hydrostatics_metrics.get("draft_delta_m"),
+            "hydrostatic_penalty": score_components.get("hydrostatic_penalty"),
         },
         "execution": {
             "runtime_budget_hours": runtime_budget_hours,

@@ -55,6 +55,9 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert case_payload["summary_metrics"]["geometry"]["vertices_count"] > 0
     assert case_payload["summary_metrics"]["evaluation"]["best_candidate_id"] == "candidate-3"
     assert case_payload["summary_metrics"]["evaluation"]["best_candidate_geometry_path"].endswith("candidate-3.stl")
+    assert case_payload["summary_metrics"]["hydrostatics"]["volume_delta_pct"] >= 0.0
+    assert "draft_delta_m" in case_payload["summary_metrics"]["hydrostatics"]
+    assert "hydrostatic_penalty" in case_payload["summary_metrics"]["hydrostatics"]
     assert case_payload["summary_metrics"]["execution"]["processed_candidates"] == 3
     assert case_payload["summary_metrics"]["optimization"]["ranked_count"] == 3
     assert len(case_payload["summary_metrics"]["candidates"]["rows"]) == 3
@@ -77,7 +80,10 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert evaluation_index[0]["geometry_metrics"]["draft_extent_m"] > 0.0
     assert evaluation_index[0]["geometry_metrics"]["slenderness_ratio"] > 0.0
     assert evaluation_index[0]["geometry_metrics"]["surface_area_m2"] > 0.0
+    assert evaluation_index[0]["hydrostatics_metrics"]["volume_proxy_m3"] > 0.0
+    assert evaluation_index[0]["hydrostatics_metrics"]["volume_delta_pct"] >= 0.0
     assert evaluation_index[0]["score_components"]["resistance_proxy"] > 0.0
+    assert evaluation_index[0]["score_components"]["hydrostatic_penalty"] >= 0.0
     assert evaluation_index[2]["mid_score"] < evaluation_index[0]["mid_score"]
     assert report_path.exists()
     report_html = report_path.read_text(encoding="utf-8")
@@ -86,6 +92,8 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert "Candidate count" in report_html
     assert "Optimization summary" in report_html
     assert "Ranked candidates: 3" in report_html
+    assert "Hydrostatics-lite" in report_html
+    assert "Hydrostatic penalty" in report_html
 
 
 def test_run_vertical_slice_fails_fast_when_no_candidates_are_evaluated(

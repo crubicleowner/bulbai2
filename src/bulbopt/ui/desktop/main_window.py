@@ -23,6 +23,7 @@ class MainWindow(QMainWindow):
         self._evaluation_summary_label: QLabel | None = None
         self._execution_summary_label: QLabel | None = None
         self._weights_summary_label: QLabel | None = None
+        self._hydrostatics_summary_label: QLabel | None = None
         self._optimization_summary_label: QLabel | None = None
         self._candidates_summary_label: QLabel | None = None
         self._candidates_list_widget: QListWidget | None = None
@@ -75,6 +76,11 @@ class MainWindow(QMainWindow):
             central_widget,
         )
         self._weights_summary_label.setObjectName("weights_summary_label")
+        self._hydrostatics_summary_label = QLabel(
+            "Hydrostatics-lite: not available",
+            central_widget,
+        )
+        self._hydrostatics_summary_label.setObjectName("hydrostatics_summary_label")
         self._optimization_summary_label = QLabel(
             "Optimization summary: not available",
             central_widget,
@@ -111,6 +117,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._evaluation_summary_label)
         layout.addWidget(self._execution_summary_label)
         layout.addWidget(self._weights_summary_label)
+        layout.addWidget(self._hydrostatics_summary_label)
         layout.addWidget(self._optimization_summary_label)
         layout.addWidget(self._candidates_summary_label)
         layout.addWidget(self._candidates_list_widget)
@@ -130,6 +137,7 @@ class MainWindow(QMainWindow):
             or self._evaluation_summary_label is None
             or self._execution_summary_label is None
             or self._weights_summary_label is None
+            or self._hydrostatics_summary_label is None
             or self._optimization_summary_label is None
             or self._candidates_summary_label is None
             or self._candidates_list_widget is None
@@ -151,6 +159,7 @@ class MainWindow(QMainWindow):
         self._evaluation_summary_label.setText("Evaluation summary: not available")
         self._execution_summary_label.setText("Execution summary: not available")
         self._weights_summary_label.setText("Objective weights: not available")
+        self._hydrostatics_summary_label.setText("Hydrostatics-lite: not available")
         self._optimization_summary_label.setText("Optimization summary: not available")
         self._candidates_summary_label.setText("Candidates summary: not available")
         self._candidates_list_widget.clear()
@@ -178,6 +187,7 @@ class MainWindow(QMainWindow):
         self._evaluation_summary_label.setText(results_payload["evaluation"])
         self._execution_summary_label.setText(results_payload["execution"])
         self._weights_summary_label.setText(results_payload["weights"])
+        self._hydrostatics_summary_label.setText(results_payload["hydrostatics"])
         self._optimization_summary_label.setText(results_payload["optimization"])
         self._candidates_summary_label.setText(results_payload["candidates"])
         self._candidates_list_widget.addItems(results_payload["candidate_rows"])
@@ -205,6 +215,7 @@ class MainWindow(QMainWindow):
         evaluation_summary = "Evaluation summary: not available"
         execution_summary = "Execution summary: not available"
         weights_summary = "Objective weights: not available"
+        hydrostatics_summary = "Hydrostatics-lite: not available"
         optimization_summary = "Optimization summary: not available"
         candidates_summary = "Candidates summary: not available"
         candidate_rows: list[str] = []
@@ -227,6 +238,7 @@ class MainWindow(QMainWindow):
                 evaluation_summary = summary_results["evaluation"]
                 execution_summary = summary_results["execution"]
                 weights_summary = summary_results["weights"]
+                hydrostatics_summary = summary_results["hydrostatics"]
                 optimization_summary = summary_results["optimization"]
                 candidates_summary = summary_results["candidates"]
                 candidate_rows = summary_results["candidate_rows"]
@@ -276,6 +288,13 @@ class MainWindow(QMainWindow):
                         "resistance_proxy": score_components.get("resistance_proxy", "n/a"),
                     }
                 )
+                hydrostatics_summary = self._format_hydrostatics_summary(
+                    {
+                        "volume_delta_pct": best_candidate.get("hydrostatics_metrics", {}).get("volume_delta_pct", "n/a"),
+                        "draft_delta_m": best_candidate.get("hydrostatics_metrics", {}).get("draft_delta_m", "n/a"),
+                        "hydrostatic_penalty": score_components.get("hydrostatic_penalty", "n/a"),
+                    }
+                )
 
         if metadata_path.exists():
             metadata_payload = self._json_store.read(metadata_path)
@@ -306,6 +325,7 @@ class MainWindow(QMainWindow):
             "evaluation": evaluation_summary,
             "execution": execution_summary,
             "weights": weights_summary,
+            "hydrostatics": hydrostatics_summary,
             "optimization": optimization_summary,
             "candidates": candidates_summary,
             "candidate_rows": candidate_rows,
@@ -317,6 +337,7 @@ class MainWindow(QMainWindow):
         evaluation_payload = summary_metrics.get("evaluation", {})
         execution_payload = summary_metrics.get("execution", {})
         weights_payload = summary_metrics.get("objective_weights", {})
+        hydrostatics_payload = summary_metrics.get("hydrostatics", {})
         optimization_payload = summary_metrics.get("optimization", {})
         candidates_payload = summary_metrics.get("candidates", {})
         best_candidate_geometry_path = evaluation_payload.get("best_candidate_geometry_path")
@@ -325,6 +346,7 @@ class MainWindow(QMainWindow):
             "evaluation": self._format_evaluation_summary(evaluation_payload),
             "execution": self._format_execution_summary(execution_payload),
             "weights": self._format_weights_summary(weights_payload),
+            "hydrostatics": self._format_hydrostatics_summary(hydrostatics_payload),
             "optimization": self._format_optimization_summary(optimization_payload),
             "candidates": candidates_payload.get("summary", "Candidates summary: not available"),
             "candidate_rows": candidates_payload.get("rows", []),
@@ -375,4 +397,12 @@ class MainWindow(QMainWindow):
             f"axial={payload.get('axial_gain_weight', 'n/a')} "
             f"draft={payload.get('draft_reduction_weight', 'n/a')} "
             f"beam={payload.get('beam_growth_weight', 'n/a')}"
+        )
+
+    def _format_hydrostatics_summary(self, payload: dict) -> str:
+        return (
+            "Hydrostatics-lite: "
+            f"volume_delta={payload.get('volume_delta_pct', 'n/a')}% "
+            f"draft_delta={payload.get('draft_delta_m', 'n/a')} "
+            f"penalty={payload.get('hydrostatic_penalty', 'n/a')}"
         )

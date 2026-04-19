@@ -40,6 +40,13 @@
     <p>Axial extent: {{ best_candidate.geometry_metrics.axial_extent_m }}</p>
     <p>Beam extent: {{ best_candidate.geometry_metrics.beam_extent_m }}</p>
     <p>Draft extent: {{ best_candidate.geometry_metrics.draft_extent_m }}</p>
+    {% if best_candidate.hydrostatics_metrics %}
+    <h2>Hydrostatics-lite</h2>
+    <p>Volume proxy: {{ best_candidate.hydrostatics_metrics.volume_proxy_m3 }}</p>
+    <p>Volume delta: {{ best_candidate.hydrostatics_metrics.volume_delta_pct }}%</p>
+    <p>Draft delta: {{ best_candidate.hydrostatics_metrics.draft_delta_m }}</p>
+    <p>Hydrostatic penalty: {{ best_candidate.score_components.hydrostatic_penalty }}</p>
+    {% endif %}
     {% endif %}
     {% if ranked_candidates %}
     <h2>Candidate Comparison</h2>

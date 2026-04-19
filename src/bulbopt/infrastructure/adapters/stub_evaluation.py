@@ -19,7 +19,8 @@ class StubEvaluationAdapter:
             candidate_mesh = self._load_mesh(candidate_path)
             repaired_mesh = self._load_mesh(repaired_path)
             geometry_metrics = self._build_geometry_metrics(candidate, candidate_mesh, repaired_mesh)
-            score_components = self._build_score_components(geometry_metrics)
+            hydrostatics_metrics = self._build_hydrostatics_metrics(geometry_metrics, candidate_mesh, repaired_mesh)
+            score_components = self._build_score_components(geometry_metrics, hydrostatics_metrics)
             resistance_proxy = max(score_components["resistance_proxy"], 1e-6)
             fast_score = round(1.0 / resistance_proxy, 6)
             mid_score = round(
@@ -27,6 +28,10 @@ class StubEvaluationAdapter:
                 - (weights["axial_gain_weight"] * geometry_metrics["axial_gain_m"])
                 - (weights["draft_reduction_weight"] * geometry_metrics["draft_reduction_m"])
                 + (weights["beam_growth_weight"] * geometry_metrics["beam_growth_m"]),
+                6,
+            )
+            mid_score = round(
+                mid_score + (0.05 * score_components["hydrostatic_penalty"]),
                 6,
             )
             evaluated.append(
@@ -37,6 +42,7 @@ class StubEvaluationAdapter:
                     "mid_score": mid_score,
                     "objective_weights": weights,
                     "geometry_metrics": geometry_metrics,
+                    "hydrostatics_metrics": hydrostatics_metrics,
                     "score_components": score_components,
                 }
             )
@@ -102,10 +108,43 @@ class StubEvaluationAdapter:
             "draft_reduction_m": max(repaired_draft - draft_extent, 0.0),
         }
 
-    def _build_score_components(self, geometry_metrics: dict[str, float]) -> dict[str, float]:
+    def _build_hydrostatics_metrics(
+        self,
+        geometry_metrics: dict[str, float],
+        candidate_mesh: trimesh.Trimesh,
+        repaired_mesh: trimesh.Trimesh,
+    ) -> dict[str, float]:
+        candidate_volume = self._mesh_volume_proxy(candidate_mesh)
+        repaired_volume = self._mesh_volume_proxy(repaired_mesh)
+        volume_delta_pct = abs(candidate_volume - repaired_volume) / max(repaired_volume, 1e-6) * 100.0
+        draft_delta_m = geometry_metrics["draft_extent_m"] - float(repaired_mesh.extents.astype(float)[2])
+        hydrostatic_penalty = (volume_delta_pct / 10.0) + abs(draft_delta_m)
+        return {
+            "volume_proxy_m3": round(candidate_volume, 6),
+            "reference_volume_proxy_m3": round(repaired_volume, 6),
+            "volume_delta_pct": round(volume_delta_pct, 6),
+            "draft_delta_m": round(draft_delta_m, 6),
+            "hydrostatic_penalty": round(hydrostatic_penalty, 6),
+        }
+
+    def _build_score_components(
+        self,
+        geometry_metrics: dict[str, float],
+        hydrostatics_metrics: dict[str, float],
+    ) -> dict[str, float]:
         frontal_area_proxy = geometry_metrics["beam_extent_m"] * geometry_metrics["draft_extent_m"]
         resistance_proxy = frontal_area_proxy / max(geometry_metrics["axial_extent_m"], 1e-6)
         return {
             "frontal_area_proxy_m2": round(frontal_area_proxy, 6),
             "resistance_proxy": max(round(resistance_proxy, 6), 1e-6),
+            "hydrostatic_penalty": hydrostatics_metrics["hydrostatic_penalty"],
         }
+
+    def _mesh_volume_proxy(self, mesh: trimesh.Trimesh) -> float:
+        if mesh.is_volume:
+            return float(abs(mesh.volume))
+        try:
+            return float(abs(mesh.convex_hull.volume))
+        except Exception:
+            extents = mesh.extents.astype(float)
+            return float(extents[0] * extents[1] * extents[2])
