@@ -44,6 +44,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         geometry_summary = central_widget.findChild(QLabel, "geometry_summary_label")
         evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
         execution_summary = central_widget.findChild(QLabel, "execution_summary_label")
+        optimization_summary = central_widget.findChild(QLabel, "optimization_summary_label")
         candidates_summary = central_widget.findChild(QLabel, "candidates_summary_label")
         candidates_list = central_widget.findChild(QListWidget, "candidates_list_widget")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
@@ -59,6 +60,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert geometry_summary is not None
         assert evaluation_summary is not None
         assert execution_summary is not None
+        assert optimization_summary is not None
         assert candidates_summary is not None
         assert candidates_list is not None
         assert open_case_button is not None
@@ -72,6 +74,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert "not available" in geometry_summary.text()
         assert "not available" in evaluation_summary.text()
         assert "not available" in execution_summary.text()
+        assert "not available" in optimization_summary.text()
         assert "not available" in candidates_summary.text()
         assert candidates_list.count() == 0
         assert open_case_button.isEnabled() is False
@@ -151,6 +154,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
                 "geometry": "Geometry summary: V=120 F=240 watertight=no axis=0 slenderness=7.5",
                 "evaluation": "Evaluation summary: cand-1 fast=1.0 mid=9.0 resistance=4.08",
                 "execution": "Execution summary: runtime=8 h candidates=3 processed=3",
+                "optimization": "Optimization summary: best=cand-1 ranked=3 spread=2.0",
                 "candidates": "Candidates: cand-1 mid=9.0 | cand-2 mid=8.0 | cand-3 mid=7.0",
                 "candidate_rows": [
                     "cand-1 | fast=1.0 | mid=9.0",
@@ -169,6 +173,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         geometry_summary = central_widget.findChild(QLabel, "geometry_summary_label")
         evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
         execution_summary = central_widget.findChild(QLabel, "execution_summary_label")
+        optimization_summary = central_widget.findChild(QLabel, "optimization_summary_label")
         candidates_summary = central_widget.findChild(QLabel, "candidates_summary_label")
         candidates_list = central_widget.findChild(QListWidget, "candidates_list_widget")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
@@ -180,6 +185,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert geometry_summary is not None
         assert evaluation_summary is not None
         assert execution_summary is not None
+        assert optimization_summary is not None
         assert candidates_summary is not None
         assert candidates_list is not None
         assert open_case_button is not None
@@ -200,6 +206,8 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert "resistance=4.08" in evaluation_summary.text()
         assert "runtime=8 h" in execution_summary.text()
         assert "processed=3" in execution_summary.text()
+        assert "best=cand-1" in optimization_summary.text()
+        assert "ranked=3" in optimization_summary.text()
         assert "cand-2" in candidates_summary.text()
         assert "cand-3" in candidates_summary.text()
         assert candidates_list.count() == 3
@@ -291,6 +299,14 @@ def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypat
             ),
             encoding="utf-8",
         )
+        (case_dir / "working" / "evaluation").mkdir(parents=True)
+        (case_dir / "working" / "evaluation" / "optimization_summary.json").write_text(
+            (
+                '{"best_candidate_id":"candidate-3","ranked_count":2,'
+                '"best_mid_score":7.0,"worst_mid_score":8.1,"mid_score_spread":1.1}'
+            ),
+            encoding="utf-8",
+        )
         (case_dir / "working" / "repaired" / "geometry_analysis.json").write_text(
             (
                 '{"quality_report":{"vertices_count":14638,"faces_count":29272,'
@@ -307,6 +323,9 @@ def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypat
         assert "candidate-3" in results["evaluation"]
         assert "7.0" in results["evaluation"]
         assert "0.244" in results["evaluation"]
+        assert "candidate-3" in results["optimization"]
+        assert "ranked=2" in results["optimization"]
+        assert "spread=1.1" in results["optimization"]
         assert "candidate-1" in results["candidates"]
         assert "candidate-3" in results["candidates"]
         assert "mid=8.1" in results["candidates"]

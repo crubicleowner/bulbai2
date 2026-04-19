@@ -36,6 +36,9 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     case_dir = tmp_path / "projects" / summary.case_id
     candidate_index = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
     evaluation_index = json.loads((case_dir / "evaluation_index.json").read_text(encoding="utf-8"))
+    optimization_summary = json.loads(
+        (case_dir / "working" / "evaluation" / "optimization_summary.json").read_text(encoding="utf-8")
+    )
     geometry_analysis = json.loads(
         (case_dir / "working" / "repaired" / "geometry_analysis.json").read_text(encoding="utf-8")
     )
@@ -53,6 +56,9 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert metadata_payload["create_case_command"]["runtime_budget_hours"] == 8
     assert len(candidate_index) == 3
     assert len(evaluation_index) == 3
+    assert optimization_summary["ranked_count"] == 3
+    assert optimization_summary["best_candidate_id"] == "candidate-3"
+    assert optimization_summary["mid_score_spread"] > 0.0
     assert geometry_analysis["quality_report"]["vertices_count"] > 0
     assert geometry_analysis["quality_report"]["faces_count"] > 0
     assert geometry_analysis["quality_report"]["primary_axis"] == 0
@@ -70,6 +76,8 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert "candidate-3" in report_html
     assert "Runtime budget" in report_html
     assert "Candidate count" in report_html
+    assert "Optimization summary" in report_html
+    assert "Ranked candidates: 3" in report_html
 
 
 def test_run_vertical_slice_fails_fast_when_no_candidates_are_evaluated(

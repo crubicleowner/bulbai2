@@ -22,6 +22,7 @@ class MainWindow(QMainWindow):
         self._geometry_summary_label: QLabel | None = None
         self._evaluation_summary_label: QLabel | None = None
         self._execution_summary_label: QLabel | None = None
+        self._optimization_summary_label: QLabel | None = None
         self._candidates_summary_label: QLabel | None = None
         self._candidates_list_widget: QListWidget | None = None
         self._open_case_button: QPushButton | None = None
@@ -66,6 +67,11 @@ class MainWindow(QMainWindow):
             central_widget,
         )
         self._execution_summary_label.setObjectName("execution_summary_label")
+        self._optimization_summary_label = QLabel(
+            "Optimization summary: not available",
+            central_widget,
+        )
+        self._optimization_summary_label.setObjectName("optimization_summary_label")
         self._candidates_summary_label = QLabel(
             "Candidates summary: not available",
             central_widget,
@@ -92,6 +98,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._geometry_summary_label)
         layout.addWidget(self._evaluation_summary_label)
         layout.addWidget(self._execution_summary_label)
+        layout.addWidget(self._optimization_summary_label)
         layout.addWidget(self._candidates_summary_label)
         layout.addWidget(self._candidates_list_widget)
         layout.addWidget(self._open_case_button)
@@ -108,6 +115,7 @@ class MainWindow(QMainWindow):
             or self._geometry_summary_label is None
             or self._evaluation_summary_label is None
             or self._execution_summary_label is None
+            or self._optimization_summary_label is None
             or self._candidates_summary_label is None
             or self._candidates_list_widget is None
             or self._open_case_button is None
@@ -124,6 +132,7 @@ class MainWindow(QMainWindow):
         self._geometry_summary_label.setText("Geometry summary: not available")
         self._evaluation_summary_label.setText("Evaluation summary: not available")
         self._execution_summary_label.setText("Execution summary: not available")
+        self._optimization_summary_label.setText("Optimization summary: not available")
         self._candidates_summary_label.setText("Candidates summary: not available")
         self._candidates_list_widget.clear()
 
@@ -148,6 +157,7 @@ class MainWindow(QMainWindow):
         self._geometry_summary_label.setText(results_payload["geometry"])
         self._evaluation_summary_label.setText(results_payload["evaluation"])
         self._execution_summary_label.setText(results_payload["execution"])
+        self._optimization_summary_label.setText(results_payload["optimization"])
         self._candidates_summary_label.setText(results_payload["candidates"])
         self._candidates_list_widget.addItems(results_payload["candidate_rows"])
         self._open_case_button.setEnabled(True)
@@ -168,12 +178,14 @@ class MainWindow(QMainWindow):
         geometry_summary = "Geometry summary: not available"
         evaluation_summary = "Evaluation summary: not available"
         execution_summary = "Execution summary: not available"
+        optimization_summary = "Optimization summary: not available"
         candidates_summary = "Candidates summary: not available"
         candidate_rows: list[str] = []
 
         geometry_path = case_dir / "working" / "repaired" / "geometry_analysis.json"
         evaluation_path = case_dir / "evaluation_index.json"
         metadata_path = case_dir / "metadata.json"
+        optimization_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
 
         if geometry_path.exists():
             geometry_payload = self._json_store.read(geometry_path)
@@ -236,10 +248,20 @@ class MainWindow(QMainWindow):
                 f"processed={processed_count}"
             )
 
+        if optimization_path.exists():
+            optimization_payload = self._json_store.read(optimization_path)
+            optimization_summary = (
+                "Optimization summary: "
+                f"best={optimization_payload.get('best_candidate_id', 'n/a')} "
+                f"ranked={optimization_payload.get('ranked_count', 'n/a')} "
+                f"spread={optimization_payload.get('mid_score_spread', 'n/a')}"
+            )
+
         return {
             "geometry": geometry_summary,
             "evaluation": evaluation_summary,
             "execution": execution_summary,
+            "optimization": optimization_summary,
             "candidates": candidates_summary,
             "candidate_rows": candidate_rows,
         }

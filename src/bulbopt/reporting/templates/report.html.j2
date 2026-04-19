@@ -14,6 +14,14 @@
     <p>Processed candidates: {{ processed_candidates }}</p>
     <p>OpenFOAM available: {{ openfoam_available }}</p>
     <p>High fidelity used: {{ high_fidelity_used }}</p>
+    {% if optimization_summary %}
+    <h2>Optimization summary</h2>
+    <p>Best candidate: {{ optimization_summary.best_candidate_id }}</p>
+    <p>Ranked candidates: {{ optimization_summary.ranked_count }}</p>
+    <p>Best mid score: {{ optimization_summary.best_mid_score }}</p>
+    <p>Worst mid score: {{ optimization_summary.worst_mid_score }}</p>
+    <p>Mid-score spread: {{ optimization_summary.mid_score_spread }}</p>
+    {% endif %}
     {% if best_candidate %}
     <h2>Best Candidate Metrics</h2>
     <p>Fast score: {{ best_candidate.fast_score }}</p>

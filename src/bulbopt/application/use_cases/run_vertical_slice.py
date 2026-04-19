@@ -31,7 +31,15 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
 
         evaluated_candidates = evaluation.evaluate_candidates(candidates)
         json_store.write(case_dir / "evaluation_index.json", evaluated_candidates)
-        best_candidate = optimization.choose_best(evaluated_candidates)
+        ranked_candidates = optimization.rank_candidates(evaluated_candidates)
+        best_candidate = ranked_candidates[0]
+        optimization_summary = optimization.summarize_ranking(evaluated_candidates)
+        optimization_summary_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
+        json_store.write(optimization_summary_path, optimization_summary)
+        artifacts_index_path = case_dir / "artifacts_index.json"
+        artifacts_index = json_store.read(artifacts_index_path)
+        artifacts_index["optimization_summary"] = str(optimization_summary_path)
+        json_store.write(artifacts_index_path, artifacts_index)
         case.status = CaseStatus.ASSEMBLING_RESULTS
         repository.save_case(case)
         report.build_html_report(
@@ -41,10 +49,8 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 "status": CaseStatus.COMPLETED.value,
                 "best_candidate_id": best_candidate["candidate_id"],
                 "best_candidate": best_candidate,
-                "ranked_candidates": sorted(
-                    evaluated_candidates,
-                    key=lambda item: item["mid_score"],
-                ),
+                "ranked_candidates": ranked_candidates,
+                "optimization_summary": optimization_summary,
                 "runtime_budget_hours": command.runtime_budget_hours,
                 "candidate_count": command.candidate_count,
                 "processed_candidates": len(evaluated_candidates),
