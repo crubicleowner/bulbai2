@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 from typing import Any
@@ -36,6 +37,7 @@ class FilesystemProjectRepository:
 
     def save_case(self, case: OptimizationCase) -> None:
         case_dir = self._require_existing_case(case.case_id)
+        case.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.json_store.write(case_dir / "case.json", self._case_payload(case))
 
     def save_candidate_index(self, case_id: str, payload: list[dict[str, Any]]) -> None:

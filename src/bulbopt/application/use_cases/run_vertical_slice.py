@@ -47,7 +47,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
         case.status = CaseStatus.COMPLETED
         case.is_recoverable = False
         repository.save_case(case)
-    except OSError:
+    except Exception:
         case.status = CaseStatus.FAILED
         case.is_recoverable = True
         repository.save_case(case)

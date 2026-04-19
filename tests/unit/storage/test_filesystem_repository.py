@@ -1,9 +1,12 @@
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
 import pytest
 
-from bulbopt.domain.core.models import OptimizationCase
+from bulbopt.domain.core.models import CaseStatus, OptimizationCase
+from bulbopt.storage.filesystem.json_store import JsonStore
+from bulbopt.storage.project_repository import filesystem_repository as repository_module
 from bulbopt.storage.project_repository.filesystem_repository import FilesystemProjectRepository
 
 
@@ -62,3 +65,33 @@ def test_create_case_rejects_path_traversal_case_id(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="case_id"):
         repository.create_case(case)
+
+
+def test_save_case_refreshes_updated_at_before_persisting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+    case = OptimizationCase.new(case_id="case-002", case_name="demo")
+    repository.create_case(case)
+
+    original_updated_at = case.updated_at
+    refreshed_updated_at = datetime(2026, 4, 19, 12, 34, 56, tzinfo=timezone.utc).isoformat(
+        timespec="seconds"
+    )
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz):
+            return datetime(2026, 4, 19, 12, 34, 56, tzinfo=tz)
+
+    monkeypatch.setattr(repository_module, "datetime", FixedDateTime)
+
+    case.status = CaseStatus.COMPLETED
+    repository.save_case(case)
+
+    payload = JsonStore().read(repository.case_dir(case.case_id) / "case.json")
+
+    assert original_updated_at != refreshed_updated_at
+    assert case.updated_at == refreshed_updated_at
+    assert payload["updated_at"] == refreshed_updated_at
+    assert payload["status"] == "completed"

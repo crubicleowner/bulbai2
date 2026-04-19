@@ -69,6 +69,14 @@ def test_run_vertical_slice_fails_fast_when_no_candidates_are_evaluated(
             ),
         )
 
+    case_dirs = list((tmp_path / "projects").iterdir())
+    assert len(case_dirs) == 1
+
+    case_payload = json.loads((case_dirs[0] / "case.json").read_text(encoding="utf-8"))
+
+    assert case_payload["status"] == "failed"
+    assert case_payload["is_recoverable"] is True
+
 
 def test_run_vertical_slice_preserves_binary_stl_input(tmp_path: Path) -> None:
     source_path = tmp_path / "binary-demo.stl"
