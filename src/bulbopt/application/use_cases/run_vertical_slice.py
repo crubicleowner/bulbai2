@@ -45,6 +45,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
         artifacts_index_path = case_dir / "artifacts_index.json"
         artifacts_index = json_store.read(artifacts_index_path)
         artifacts_index["optimization_summary"] = str(optimization_summary_path)
+        artifacts_index["best_candidate_stl"] = str(best_candidate["geometry_path"])
         json_store.write(artifacts_index_path, artifacts_index)
         case.summary_metrics = _build_case_summary_metrics(
             geometry_analysis=geometry_analysis,
@@ -132,6 +133,7 @@ def _build_case_summary_metrics(
         },
         "evaluation": {
             "best_candidate_id": best_candidate.get("candidate_id"),
+            "best_candidate_geometry_path": best_candidate.get("geometry_path"),
             "fast_score": best_candidate.get("fast_score"),
             "mid_score": best_candidate.get("mid_score"),
             "resistance_proxy": score_components.get("resistance_proxy"),

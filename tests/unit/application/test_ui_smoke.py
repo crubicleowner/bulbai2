@@ -50,6 +50,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         candidates_list = central_widget.findChild(QListWidget, "candidates_list_widget")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
+        open_best_button = central_widget.findChild(QPushButton, "open_best_candidate_button")
 
         assert app_name is not None
         assert ready_state is not None
@@ -67,6 +68,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert candidates_list is not None
         assert open_case_button is not None
         assert open_report_button is not None
+        assert open_best_button is not None
         assert app_name.text() == "BulbOpt Desktop"
         assert "Ready" in ready_state.text()
         assert "base_hull.stl" in source_path.text()
@@ -82,6 +84,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert candidates_list.count() == 0
         assert open_case_button.isEnabled() is False
         assert open_report_button.isEnabled() is False
+        assert open_best_button.isEnabled() is False
     finally:
         window.close()
         app.processEvents()
@@ -173,6 +176,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
                     "cand-2 | fast=0.9 | mid=8.0",
                     "cand-3 | fast=0.8 | mid=7.0",
                 ],
+                "best_candidate_path": tmp_path / "projects" / "case-001" / "working" / "candidates" / "cand-1.stl",
             },
         )
 
@@ -191,6 +195,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         candidates_list = central_widget.findChild(QListWidget, "candidates_list_widget")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
+        open_best_button = central_widget.findChild(QPushButton, "open_best_candidate_button")
 
         assert run_button is not None
         assert run_status is not None
@@ -204,6 +209,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert candidates_list is not None
         assert open_case_button is not None
         assert open_report_button is not None
+        assert open_best_button is not None
 
         run_button.click()
         app.processEvents()
@@ -229,12 +235,13 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert "cand-2" in candidates_list.item(1).text()
         assert open_case_button.isEnabled() is True
         assert open_report_button.isEnabled() is True
+        assert open_best_button.isEnabled() is True
     finally:
         window.close()
         app.processEvents()
 
 
-def test_main_window_opens_case_and_report_artifacts(tmp_path: Path, monkeypatch) -> None:
+def test_main_window_opens_case_report_and_best_candidate_artifacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
 
     opened_paths: list[Path] = []
@@ -267,19 +274,32 @@ def test_main_window_opens_case_and_report_artifacts(tmp_path: Path, monkeypatch
         run_button = central_widget.findChild(QPushButton, "run_vertical_slice_button")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
+        open_best_button = central_widget.findChild(QPushButton, "open_best_candidate_button")
 
         assert run_button is not None
         assert open_case_button is not None
         assert open_report_button is not None
+        assert open_best_button is not None
+
+        case_dir = tmp_path / "projects" / "case-101"
+        case_dir.mkdir(parents=True, exist_ok=True)
+        (case_dir / "artifacts_index.json").write_text(
+            '{"best_candidate_stl":"'
+            + str(case_dir / "working" / "candidates" / "cand-7.stl").replace("\\", "\\\\")
+            + '"}',
+            encoding="utf-8",
+        )
 
         run_button.click()
         open_case_button.click()
         open_report_button.click()
+        open_best_button.click()
         app.processEvents()
 
         assert opened_paths == [
             tmp_path / "projects" / "case-101",
             tmp_path / "projects" / "case-101" / "outputs" / "reports" / "report.html",
+            tmp_path / "projects" / "case-101" / "working" / "candidates" / "cand-7.stl",
         ]
     finally:
         window.close()

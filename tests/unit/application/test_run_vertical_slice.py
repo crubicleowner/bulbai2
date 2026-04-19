@@ -42,6 +42,7 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     geometry_analysis = json.loads(
         (case_dir / "working" / "repaired" / "geometry_analysis.json").read_text(encoding="utf-8")
     )
+    artifacts_index = json.loads((case_dir / "artifacts_index.json").read_text(encoding="utf-8"))
     report_path = case_dir / "outputs" / "reports" / "report.html"
     case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
     metadata_payload = json.loads((case_dir / "metadata.json").read_text(encoding="utf-8"))
@@ -53,6 +54,7 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert case_payload["is_recoverable"] is False
     assert case_payload["summary_metrics"]["geometry"]["vertices_count"] > 0
     assert case_payload["summary_metrics"]["evaluation"]["best_candidate_id"] == "candidate-3"
+    assert case_payload["summary_metrics"]["evaluation"]["best_candidate_geometry_path"].endswith("candidate-3.stl")
     assert case_payload["summary_metrics"]["execution"]["processed_candidates"] == 3
     assert case_payload["summary_metrics"]["optimization"]["ranked_count"] == 3
     assert len(case_payload["summary_metrics"]["candidates"]["rows"]) == 3
@@ -64,6 +66,7 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert optimization_summary["ranked_count"] == 3
     assert optimization_summary["best_candidate_id"] == "candidate-3"
     assert optimization_summary["mid_score_spread"] > 0.0
+    assert artifacts_index["best_candidate_stl"].endswith("candidate-3.stl")
     assert geometry_analysis["quality_report"]["vertices_count"] > 0
     assert geometry_analysis["quality_report"]["faces_count"] > 0
     assert geometry_analysis["quality_report"]["primary_axis"] == 0

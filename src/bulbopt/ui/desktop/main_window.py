@@ -28,8 +28,10 @@ class MainWindow(QMainWindow):
         self._candidates_list_widget: QListWidget | None = None
         self._open_case_button: QPushButton | None = None
         self._open_report_button: QPushButton | None = None
+        self._open_best_candidate_button: QPushButton | None = None
         self._last_case_dir: Path | None = None
         self._last_report_path: Path | None = None
+        self._last_best_candidate_path: Path | None = None
         self._json_store = JsonStore()
         self._build_central_widget()
 
@@ -93,6 +95,10 @@ class MainWindow(QMainWindow):
         self._open_report_button.setObjectName("open_report_button")
         self._open_report_button.setEnabled(False)
         self._open_report_button.clicked.connect(self._open_report)
+        self._open_best_candidate_button = QPushButton("Open Best Candidate STL", central_widget)
+        self._open_best_candidate_button.setObjectName("open_best_candidate_button")
+        self._open_best_candidate_button.setEnabled(False)
+        self._open_best_candidate_button.clicked.connect(self._open_best_candidate)
 
         layout.addWidget(app_label)
         layout.addWidget(ready_label)
@@ -110,6 +116,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._candidates_list_widget)
         layout.addWidget(self._open_case_button)
         layout.addWidget(self._open_report_button)
+        layout.addWidget(self._open_best_candidate_button)
         layout.addStretch(1)
 
         self.setCentralWidget(central_widget)
@@ -128,6 +135,7 @@ class MainWindow(QMainWindow):
             or self._candidates_list_widget is None
             or self._open_case_button is None
             or self._open_report_button is None
+            or self._open_best_candidate_button is None
         ):
             return
 
@@ -135,8 +143,10 @@ class MainWindow(QMainWindow):
         self._run_status_label.setText("Running vertical slice...")
         self._last_case_dir = None
         self._last_report_path = None
+        self._last_best_candidate_path = None
         self._open_case_button.setEnabled(False)
         self._open_report_button.setEnabled(False)
+        self._open_best_candidate_button.setEnabled(False)
         self._geometry_summary_label.setText("Geometry summary: not available")
         self._evaluation_summary_label.setText("Evaluation summary: not available")
         self._execution_summary_label.setText("Execution summary: not available")
@@ -163,6 +173,7 @@ class MainWindow(QMainWindow):
             f"Case: {self._last_case_dir} | Report: {self._last_report_path}"
         )
         results_payload = self._load_case_results(self._last_case_dir, summary.best_candidate_id)
+        self._last_best_candidate_path = results_payload.get("best_candidate_path")
         self._geometry_summary_label.setText(results_payload["geometry"])
         self._evaluation_summary_label.setText(results_payload["evaluation"])
         self._execution_summary_label.setText(results_payload["execution"])
@@ -172,6 +183,7 @@ class MainWindow(QMainWindow):
         self._candidates_list_widget.addItems(results_payload["candidate_rows"])
         self._open_case_button.setEnabled(True)
         self._open_report_button.setEnabled(True)
+        self._open_best_candidate_button.setEnabled(self._last_best_candidate_path is not None)
 
     def _open_case_dir(self) -> None:
         if self._last_case_dir is not None:
@@ -181,10 +193,14 @@ class MainWindow(QMainWindow):
         if self._last_report_path is not None:
             self._open_path(self._last_report_path)
 
+    def _open_best_candidate(self) -> None:
+        if self._last_best_candidate_path is not None:
+            self._open_path(self._last_best_candidate_path)
+
     def _open_path(self, path: Path) -> bool:
         return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
-    def _load_case_results(self, case_dir: Path, best_candidate_id: str | None) -> dict[str, str]:
+    def _load_case_results(self, case_dir: Path, best_candidate_id: str | None) -> dict[str, str | Path | None | list[str]]:
         geometry_summary = "Geometry summary: not available"
         evaluation_summary = "Evaluation summary: not available"
         execution_summary = "Execution summary: not available"
@@ -192,6 +208,7 @@ class MainWindow(QMainWindow):
         optimization_summary = "Optimization summary: not available"
         candidates_summary = "Candidates summary: not available"
         candidate_rows: list[str] = []
+        best_candidate_path: Path | None = None
         quality_report: dict = {}
 
         case_path = case_dir / "case.json"
@@ -199,6 +216,7 @@ class MainWindow(QMainWindow):
         evaluation_path = case_dir / "evaluation_index.json"
         metadata_path = case_dir / "metadata.json"
         optimization_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
+        artifacts_path = case_dir / "artifacts_index.json"
 
         if case_path.exists():
             case_payload = self._json_store.read(case_path)
@@ -212,6 +230,7 @@ class MainWindow(QMainWindow):
                 optimization_summary = summary_results["optimization"]
                 candidates_summary = summary_results["candidates"]
                 candidate_rows = summary_results["candidate_rows"]
+                best_candidate_path = summary_results["best_candidate_path"]
 
         if geometry_path.exists():
             geometry_payload = self._json_store.read(geometry_path)
@@ -276,6 +295,12 @@ class MainWindow(QMainWindow):
             optimization_payload = self._json_store.read(optimization_path)
             optimization_summary = self._format_optimization_summary(optimization_payload)
 
+        if artifacts_path.exists():
+            artifacts_payload = self._json_store.read(artifacts_path)
+            best_candidate_stl = artifacts_payload.get("best_candidate_stl")
+            if best_candidate_stl:
+                best_candidate_path = Path(best_candidate_stl)
+
         return {
             "geometry": geometry_summary,
             "evaluation": evaluation_summary,
@@ -284,15 +309,17 @@ class MainWindow(QMainWindow):
             "optimization": optimization_summary,
             "candidates": candidates_summary,
             "candidate_rows": candidate_rows,
+            "best_candidate_path": best_candidate_path,
         }
 
-    def _build_results_from_case_summary(self, summary_metrics: dict) -> dict[str, str | list[str]]:
+    def _build_results_from_case_summary(self, summary_metrics: dict) -> dict[str, str | list[str] | Path | None]:
         geometry_payload = summary_metrics.get("geometry", {})
         evaluation_payload = summary_metrics.get("evaluation", {})
         execution_payload = summary_metrics.get("execution", {})
         weights_payload = summary_metrics.get("objective_weights", {})
         optimization_payload = summary_metrics.get("optimization", {})
         candidates_payload = summary_metrics.get("candidates", {})
+        best_candidate_geometry_path = evaluation_payload.get("best_candidate_geometry_path")
         return {
             "geometry": self._format_geometry_summary(geometry_payload),
             "evaluation": self._format_evaluation_summary(evaluation_payload),
@@ -301,6 +328,7 @@ class MainWindow(QMainWindow):
             "optimization": self._format_optimization_summary(optimization_payload),
             "candidates": candidates_payload.get("summary", "Candidates summary: not available"),
             "candidate_rows": candidates_payload.get("rows", []),
+            "best_candidate_path": Path(best_candidate_geometry_path) if best_candidate_geometry_path else None,
         }
 
     def _format_geometry_summary(self, payload: dict) -> str:
