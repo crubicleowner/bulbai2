@@ -35,6 +35,7 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
 
     case_dir = tmp_path / "projects" / summary.case_id
     candidate_index = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
+    evaluation_index = json.loads((case_dir / "evaluation_index.json").read_text(encoding="utf-8"))
     geometry_analysis = json.loads(
         (case_dir / "working" / "repaired" / "geometry_analysis.json").read_text(encoding="utf-8")
     )
@@ -50,11 +51,19 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert metadata_payload["create_case_command"]["speed_knots"] == [18.0, 20.0]
     assert metadata_payload["create_case_command"]["runtime_budget_hours"] == 8
     assert len(candidate_index) == 3
+    assert len(evaluation_index) == 3
     assert geometry_analysis["quality_report"]["vertices_count"] > 0
     assert geometry_analysis["quality_report"]["faces_count"] > 0
     assert geometry_analysis["quality_report"]["primary_axis"] == 0
     assert geometry_analysis["bulb_region"]["axis_max"] > geometry_analysis["bulb_region"]["axis_min"]
     assert (case_dir / "working" / "repaired" / "repaired.stl").exists()
+    assert evaluation_index[0]["geometry_metrics"]["axial_extent_m"] > 0.0
+    assert evaluation_index[0]["geometry_metrics"]["beam_extent_m"] > 0.0
+    assert evaluation_index[0]["geometry_metrics"]["draft_extent_m"] > 0.0
+    assert evaluation_index[0]["geometry_metrics"]["slenderness_ratio"] > 0.0
+    assert evaluation_index[0]["geometry_metrics"]["surface_area_m2"] > 0.0
+    assert evaluation_index[0]["score_components"]["resistance_proxy"] > 0.0
+    assert evaluation_index[2]["mid_score"] < evaluation_index[0]["mid_score"]
     assert report_path.exists()
     assert "candidate-3" in report_path.read_text(encoding="utf-8")
 
