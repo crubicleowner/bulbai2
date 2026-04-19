@@ -15,6 +15,7 @@ class CreateCaseCommand:
     import_format: str = 'stl'
     optimization_mode: str = 'generate_new_bulb'
     runtime_budget_hours: int = 8
+    candidate_count: int = 3
 
 
 @dataclass(slots=True)

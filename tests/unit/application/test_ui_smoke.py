@@ -89,16 +89,19 @@ def test_case_wizard_payload_reflects_user_edits(monkeypatch) -> None:
         source_path = wizard.findChild(QLineEdit, "source_path_input")
         beam = wizard.findChild(QDoubleSpinBox, "vessel_beam_input")
         runtime = wizard.findChild(QSpinBox, "runtime_budget_input")
+        candidate_count = wizard.findChild(QSpinBox, "candidate_count_input")
 
         assert case_name is not None
         assert source_path is not None
         assert beam is not None
         assert runtime is not None
+        assert candidate_count is not None
 
         case_name.setText("edited-demo")
         source_path.setText("C:/demo/custom.stl")
         beam.setValue(22.4)
         runtime.setValue(10)
+        candidate_count.setValue(5)
 
         payload = wizard.payload()
 
@@ -106,6 +109,7 @@ def test_case_wizard_payload_reflects_user_edits(monkeypatch) -> None:
         assert payload["source_path"] == "C:/demo/custom.stl"
         assert payload["vessel_beam_m"] == 22.4
         assert payload["runtime_budget_hours"] == 10
+        assert payload["candidate_count"] == 5
     finally:
         wizard.close()
         app.processEvents()

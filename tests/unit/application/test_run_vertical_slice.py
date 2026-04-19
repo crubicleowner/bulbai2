@@ -48,6 +48,7 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert summary.best_candidate_id == "candidate-3"
     assert case_payload["status"] == "completed"
     assert case_payload["is_recoverable"] is False
+    assert metadata_payload["create_case_command"]["candidate_count"] == 3
     assert metadata_payload["create_case_command"]["speed_knots"] == [18.0, 20.0]
     assert metadata_payload["create_case_command"]["runtime_budget_hours"] == 8
     assert len(candidate_index) == 3
@@ -65,7 +66,10 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert evaluation_index[0]["score_components"]["resistance_proxy"] > 0.0
     assert evaluation_index[2]["mid_score"] < evaluation_index[0]["mid_score"]
     assert report_path.exists()
-    assert "candidate-3" in report_path.read_text(encoding="utf-8")
+    report_html = report_path.read_text(encoding="utf-8")
+    assert "candidate-3" in report_html
+    assert "Runtime budget" in report_html
+    assert "Candidate count" in report_html
 
 
 def test_run_vertical_slice_fails_fast_when_no_candidates_are_evaluated(
@@ -165,6 +169,36 @@ def test_run_vertical_slice_generates_distinct_candidate_meshes(tmp_path: Path) 
     assert all(data for data in candidate_bytes)
     assert any(data != repaired_bytes for data in candidate_bytes)
     assert len({data for data in candidate_bytes}) == 3
+
+
+def test_run_vertical_slice_respects_requested_candidate_count(tmp_path: Path) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="count-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+            candidate_count=5,
+            runtime_budget_hours=12,
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    candidate_index = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
+    evaluation_index = json.loads((case_dir / "evaluation_index.json").read_text(encoding="utf-8"))
+    report_html = (case_dir / "outputs" / "reports" / "report.html").read_text(encoding="utf-8")
+
+    assert len(candidate_index) == 5
+    assert len(evaluation_index) == 5
+    assert "Candidate count: 5" in report_html
+    assert "Runtime budget: 12 h" in report_html
 
 
 def test_run_vertical_slice_marks_case_failed_when_source_stl_is_missing(

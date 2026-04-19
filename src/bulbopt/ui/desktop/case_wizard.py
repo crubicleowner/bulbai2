@@ -36,6 +36,7 @@ def default_case_payload() -> dict[str, object]:
         "displacement_t": 8420.0,
         "speed_knots": [18.0, 20.0],
         "runtime_budget_hours": 8,
+        "candidate_count": 3,
     }
 
 
@@ -65,6 +66,10 @@ class CaseWizard(QWidget):
         self._runtime_budget_input.setObjectName("runtime_budget_input")
         self._runtime_budget_input.setRange(1, 168)
         self._runtime_budget_input.setValue(int(payload["runtime_budget_hours"]))
+        self._candidate_count_input = QSpinBox(self)
+        self._candidate_count_input.setObjectName("candidate_count_input")
+        self._candidate_count_input.setRange(1, 20)
+        self._candidate_count_input.setValue(int(payload["candidate_count"]))
 
         form_layout = QFormLayout()
         form_layout.addRow("Case name", self._case_name_input)
@@ -74,6 +79,7 @@ class CaseWizard(QWidget):
         form_layout.addRow("Draft (m)", self._vessel_draft_input)
         form_layout.addRow("Displacement (t)", self._displacement_input)
         form_layout.addRow("Runtime (h)", self._runtime_budget_input)
+        form_layout.addRow("Candidates", self._candidate_count_input)
         layout.addLayout(form_layout)
 
         source_path = self._source_path_input.text() or "Not found"
@@ -94,6 +100,7 @@ class CaseWizard(QWidget):
             "displacement_t": self._displacement_input.value(),
             "speed_knots": [18.0, 20.0],
             "runtime_budget_hours": self._runtime_budget_input.value(),
+            "candidate_count": self._candidate_count_input.value(),
         }
 
     def _sync_source_label(self, value: str) -> None:

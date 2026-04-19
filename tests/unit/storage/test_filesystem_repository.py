@@ -70,6 +70,7 @@ def test_repository_persists_create_case_metadata(tmp_path: Path) -> None:
             "import_format": "stl",
             "optimization_mode": "generate_new_bulb",
             "runtime_budget_hours": 8,
+            "candidate_count": 3,
         }
     }
 

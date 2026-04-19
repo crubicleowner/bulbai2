@@ -26,7 +26,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
 
     try:
         geometry.prepare_geometry(case_dir, Path(command.source_path))
-        candidates = geometry.generate_candidates(case_dir, count=3)
+        candidates = geometry.generate_candidates(case_dir, count=command.candidate_count)
         repository.save_candidate_index(case.case_id, candidates)
 
         evaluated_candidates = evaluation.evaluate_candidates(candidates)
@@ -45,6 +45,8 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                     evaluated_candidates,
                     key=lambda item: item["mid_score"],
                 ),
+                "runtime_budget_hours": command.runtime_budget_hours,
+                "candidate_count": command.candidate_count,
                 "openfoam_available": False,
                 "high_fidelity_used": False,
             },
