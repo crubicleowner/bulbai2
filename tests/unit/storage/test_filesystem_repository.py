@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from bulbopt.application.contracts.models import CreateCaseCommand
 from bulbopt.domain.core.models import CaseStatus, OptimizationCase
 from bulbopt.storage.filesystem.json_store import JsonStore
 from bulbopt.storage.project_repository import filesystem_repository as repository_module
@@ -38,6 +39,39 @@ def test_repository_saves_candidate_index(tmp_path: Path) -> None:
     payload = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
     assert payload[0]["candidate_id"] == "cand-1"
     assert payload[0]["status"] == "generated"
+
+
+def test_repository_persists_create_case_metadata(tmp_path: Path) -> None:
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+    case = OptimizationCase.new(case_id="case-003", case_name="demo")
+    command = CreateCaseCommand(
+        case_name="demo",
+        source_path="fixtures/demo.stl",
+        vessel_length_m=142.0,
+        vessel_beam_m=19.1,
+        vessel_draft_m=6.0,
+        displacement_t=8420.0,
+        speed_knots=[18.0, 20.0],
+    )
+
+    case_dir = repository.create_case(case, metadata={"create_case_command": command})
+
+    payload = JsonStore().read(case_dir / "metadata.json")
+
+    assert payload == {
+        "create_case_command": {
+            "case_name": "demo",
+            "source_path": "fixtures/demo.stl",
+            "vessel_length_m": 142.0,
+            "vessel_beam_m": 19.1,
+            "vessel_draft_m": 6.0,
+            "displacement_t": 8420.0,
+            "speed_knots": [18.0, 20.0],
+            "import_format": "stl",
+            "optimization_mode": "generate_new_bulb",
+            "runtime_budget_hours": 8,
+        }
+    }
 
 
 def test_create_case_rejects_existing_case_folder(tmp_path: Path) -> None:

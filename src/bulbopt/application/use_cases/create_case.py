@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from dataclasses import asdict
 from uuid import uuid4
 
 from bulbopt.application.contracts.models import CreateCaseCommand
@@ -14,5 +15,5 @@ def create_case(
     case = OptimizationCase.new(case_id=f"case-{uuid4().hex[:8]}", case_name=command.case_name)
     case.source_path = command.source_path
     case.status = CaseStatus.IMPORTED
-    repository.create_case(case)
+    repository.create_case(case, metadata={"create_case_command": asdict(command)})
     return case

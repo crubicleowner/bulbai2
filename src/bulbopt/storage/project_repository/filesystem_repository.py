@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -19,14 +19,18 @@ class FilesystemProjectRepository:
         self._validate_case_id(case_id)
         return self.root_dir / case_id
 
-    def create_case(self, case: OptimizationCase) -> Path:
+    def create_case(
+        self,
+        case: OptimizationCase,
+        metadata: dict[str, Any] | None = None,
+    ) -> Path:
         case_dir = self.case_dir(case.case_id)
         if case_dir.exists():
             raise FileExistsError(f"Case already exists: {case.case_id}")
         try:
             self._create_case_tree(case_dir)
             self.json_store.write(case_dir / "case.json", self._case_payload(case))
-            self.json_store.write(case_dir / "metadata.json", {})
+            self.json_store.write(case_dir / "metadata.json", self._metadata_payload(metadata))
             self.json_store.write(case_dir / "artifacts_index.json", {})
             self.json_store.write(case_dir / "candidate_index.json", [])
             self.json_store.write(case_dir / "evaluation_index.json", [])
@@ -64,6 +68,20 @@ class FilesystemProjectRepository:
         payload = asdict(case)
         payload["status"] = case.status.value
         return payload
+
+    def _metadata_payload(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        if metadata is None:
+            return {}
+        return {key: self._serialize_metadata_value(value) for key, value in metadata.items()}
+
+    def _serialize_metadata_value(self, value: Any) -> Any:
+        if is_dataclass(value):
+            return asdict(value)
+        if isinstance(value, dict):
+            return {key: self._serialize_metadata_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._serialize_metadata_value(item) for item in value]
+        return value
 
     def _require_existing_case(self, case_id: str) -> Path:
         case_dir = self.case_dir(case_id)

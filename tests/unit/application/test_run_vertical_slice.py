@@ -29,12 +29,15 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     candidate_index = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
     report_path = case_dir / "outputs" / "reports" / "report.html"
     case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    metadata_payload = json.loads((case_dir / "metadata.json").read_text(encoding="utf-8"))
 
     assert summary.case_name == "dtmb-demo"
     assert summary.status == "completed"
     assert summary.best_candidate_id == "candidate-3"
     assert case_payload["status"] == "completed"
     assert case_payload["is_recoverable"] is False
+    assert metadata_payload["create_case_command"]["speed_knots"] == [18.0, 20.0]
+    assert metadata_payload["create_case_command"]["runtime_budget_hours"] == 8
     assert len(candidate_index) == 3
     assert report_path.exists()
     assert "candidate-3" in report_path.read_text(encoding="utf-8")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 
@@ -9,7 +10,10 @@ def build_cli_banner() -> str:
 
 
 def default_project_root() -> Path:
-    return Path(__file__).resolve().parents[3] / "bulbopt_projects"
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        return Path(local_appdata) / "BulbOpt" / "projects"
+    return Path.home() / ".bulbopt" / "projects"
 
 
 def run_desktop() -> int:

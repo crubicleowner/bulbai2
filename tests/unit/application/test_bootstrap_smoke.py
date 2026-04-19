@@ -60,7 +60,14 @@ def test_dispatch_main_launches_shell_for_module_entry() -> None:
     assert lines == []
 
 
-def test_default_project_root_is_repo_scoped() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
+def test_default_project_root_prefers_localappdata(monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
 
-    assert default_project_root() == repo_root / "bulbopt_projects"
+    assert default_project_root() == Path(r"C:\Users\tester\AppData\Local") / "BulbOpt" / "projects"
+
+
+def test_default_project_root_falls_back_to_home_directory(monkeypatch) -> None:
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr("bulbopt.app.main.Path.home", lambda: Path("/tmp/test-home"))
+
+    assert default_project_root() == Path("/tmp/test-home") / ".bulbopt" / "projects"
