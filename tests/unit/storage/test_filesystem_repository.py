@@ -71,6 +71,10 @@ def test_repository_persists_create_case_metadata(tmp_path: Path) -> None:
             "optimization_mode": "generate_new_bulb",
             "runtime_budget_hours": 8,
             "candidate_count": 3,
+            "resistance_weight": 1.0,
+            "axial_gain_weight": 0.8,
+            "draft_reduction_weight": 0.1,
+            "beam_growth_weight": 0.05,
         }
     }
 

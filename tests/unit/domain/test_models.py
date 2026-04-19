@@ -17,6 +17,10 @@ def test_create_case_command_defaults_to_stl_first_mode() -> None:
 
     assert command.import_format == 'stl'
     assert command.optimization_mode == 'generate_new_bulb'
+    assert command.resistance_weight == 1.0
+    assert command.axial_gain_weight == 0.8
+    assert command.draft_reduction_weight == 0.1
+    assert command.beam_growth_weight == 0.05
 
 
 def test_optimization_case_starts_in_draft_status() -> None:

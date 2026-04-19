@@ -6,7 +6,12 @@ import trimesh
 
 
 class StubEvaluationAdapter:
-    def evaluate_candidates(self, candidates: list[dict]) -> list[dict]:
+    def evaluate_candidates(
+        self,
+        candidates: list[dict],
+        objective_weights: dict[str, float] | None = None,
+    ) -> list[dict]:
+        weights = objective_weights or self._default_objective_weights()
         evaluated: list[dict] = []
         for candidate in candidates:
             candidate_path = Path(candidate["geometry_path"])
@@ -18,10 +23,10 @@ class StubEvaluationAdapter:
             resistance_proxy = max(score_components["resistance_proxy"], 1e-6)
             fast_score = round(1.0 / resistance_proxy, 6)
             mid_score = round(
-                resistance_proxy
-                - (0.8 * geometry_metrics["axial_gain_m"])
-                - (0.1 * geometry_metrics["draft_reduction_m"])
-                + (0.05 * geometry_metrics["beam_growth_m"]),
+                (weights["resistance_weight"] * resistance_proxy)
+                - (weights["axial_gain_weight"] * geometry_metrics["axial_gain_m"])
+                - (weights["draft_reduction_weight"] * geometry_metrics["draft_reduction_m"])
+                + (weights["beam_growth_weight"] * geometry_metrics["beam_growth_m"]),
                 6,
             )
             evaluated.append(
@@ -30,11 +35,20 @@ class StubEvaluationAdapter:
                     "status": "mid_score_ready",
                     "fast_score": fast_score,
                     "mid_score": mid_score,
+                    "objective_weights": weights,
                     "geometry_metrics": geometry_metrics,
                     "score_components": score_components,
                 }
             )
         return evaluated
+
+    def _default_objective_weights(self) -> dict[str, float]:
+        return {
+            "resistance_weight": 1.0,
+            "axial_gain_weight": 0.8,
+            "draft_reduction_weight": 0.1,
+            "beam_growth_weight": 0.05,
+        }
 
     def _load_mesh(self, source_path: Path) -> trimesh.Trimesh:
         mesh = trimesh.load(source_path, force="mesh")

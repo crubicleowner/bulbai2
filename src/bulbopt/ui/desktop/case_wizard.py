@@ -37,6 +37,10 @@ def default_case_payload() -> dict[str, object]:
         "speed_knots": [18.0, 20.0],
         "runtime_budget_hours": 8,
         "candidate_count": 3,
+        "resistance_weight": 1.0,
+        "axial_gain_weight": 0.8,
+        "draft_reduction_weight": 0.1,
+        "beam_growth_weight": 0.05,
     }
 
 
@@ -70,6 +74,22 @@ class CaseWizard(QWidget):
         self._candidate_count_input.setObjectName("candidate_count_input")
         self._candidate_count_input.setRange(1, 20)
         self._candidate_count_input.setValue(int(payload["candidate_count"]))
+        self._resistance_weight_input = self._make_weight_input(
+            float(payload["resistance_weight"]),
+            "resistance_weight_input",
+        )
+        self._axial_gain_weight_input = self._make_weight_input(
+            float(payload["axial_gain_weight"]),
+            "axial_gain_weight_input",
+        )
+        self._draft_reduction_weight_input = self._make_weight_input(
+            float(payload["draft_reduction_weight"]),
+            "draft_reduction_weight_input",
+        )
+        self._beam_growth_weight_input = self._make_weight_input(
+            float(payload["beam_growth_weight"]),
+            "beam_growth_weight_input",
+        )
 
         form_layout = QFormLayout()
         form_layout.addRow("Case name", self._case_name_input)
@@ -80,6 +100,10 @@ class CaseWizard(QWidget):
         form_layout.addRow("Displacement (t)", self._displacement_input)
         form_layout.addRow("Runtime (h)", self._runtime_budget_input)
         form_layout.addRow("Candidates", self._candidate_count_input)
+        form_layout.addRow("Resistance weight", self._resistance_weight_input)
+        form_layout.addRow("Axial gain weight", self._axial_gain_weight_input)
+        form_layout.addRow("Draft reduction weight", self._draft_reduction_weight_input)
+        form_layout.addRow("Beam growth weight", self._beam_growth_weight_input)
         layout.addLayout(form_layout)
 
         source_path = self._source_path_input.text() or "Not found"
@@ -101,6 +125,10 @@ class CaseWizard(QWidget):
             "speed_knots": [18.0, 20.0],
             "runtime_budget_hours": self._runtime_budget_input.value(),
             "candidate_count": self._candidate_count_input.value(),
+            "resistance_weight": self._resistance_weight_input.value(),
+            "axial_gain_weight": self._axial_gain_weight_input.value(),
+            "draft_reduction_weight": self._draft_reduction_weight_input.value(),
+            "beam_growth_weight": self._beam_growth_weight_input.value(),
         }
 
     def _sync_source_label(self, value: str) -> None:
@@ -111,5 +139,14 @@ class CaseWizard(QWidget):
         widget.setObjectName(object_name)
         widget.setRange(0.1, 100000.0)
         widget.setDecimals(2)
+        widget.setValue(value)
+        return widget
+
+    def _make_weight_input(self, value: float, object_name: str) -> QDoubleSpinBox:
+        widget = QDoubleSpinBox(self)
+        widget.setObjectName(object_name)
+        widget.setRange(0.0, 10.0)
+        widget.setDecimals(2)
+        widget.setSingleStep(0.05)
         widget.setValue(value)
         return widget

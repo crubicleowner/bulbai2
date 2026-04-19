@@ -12,6 +12,13 @@
     <p>Runtime budget: {{ runtime_budget_hours }} h</p>
     <p>Candidate count: {{ candidate_count }}</p>
     <p>Processed candidates: {{ processed_candidates }}</p>
+    {% if objective_weights %}
+    <h2>Objective weights</h2>
+    <p>Resistance weight: {{ objective_weights.resistance_weight }}</p>
+    <p>Axial gain weight: {{ objective_weights.axial_gain_weight }}</p>
+    <p>Draft reduction weight: {{ objective_weights.draft_reduction_weight }}</p>
+    <p>Beam growth weight: {{ objective_weights.beam_growth_weight }}</p>
+    {% endif %}
     <p>OpenFOAM available: {{ openfoam_available }}</p>
     <p>High fidelity used: {{ high_fidelity_used }}</p>
     {% if optimization_summary %}

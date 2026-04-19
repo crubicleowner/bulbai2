@@ -29,7 +29,13 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
         candidates = geometry.generate_candidates(case_dir, count=command.candidate_count)
         repository.save_candidate_index(case.case_id, candidates)
 
-        evaluated_candidates = evaluation.evaluate_candidates(candidates)
+        objective_weights = {
+            "resistance_weight": command.resistance_weight,
+            "axial_gain_weight": command.axial_gain_weight,
+            "draft_reduction_weight": command.draft_reduction_weight,
+            "beam_growth_weight": command.beam_growth_weight,
+        }
+        evaluated_candidates = evaluation.evaluate_candidates(candidates, objective_weights=objective_weights)
         json_store.write(case_dir / "evaluation_index.json", evaluated_candidates)
         ranked_candidates = optimization.rank_candidates(evaluated_candidates)
         best_candidate = ranked_candidates[0]
@@ -46,6 +52,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
             optimization_summary=optimization_summary,
             runtime_budget_hours=command.runtime_budget_hours,
             candidate_count=command.candidate_count,
+            objective_weights=objective_weights,
             ranked_candidates=ranked_candidates,
         )
         case.status = CaseStatus.ASSEMBLING_RESULTS
@@ -62,6 +69,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 "runtime_budget_hours": command.runtime_budget_hours,
                 "candidate_count": command.candidate_count,
                 "processed_candidates": len(evaluated_candidates),
+                "objective_weights": objective_weights,
                 "openfoam_available": False,
                 "high_fidelity_used": False,
             },
@@ -93,6 +101,7 @@ def _build_case_summary_metrics(
     optimization_summary: dict,
     runtime_budget_hours: int,
     candidate_count: int,
+    objective_weights: dict[str, float],
     ranked_candidates: list[dict],
 ) -> dict:
     quality_report = geometry_analysis.get("quality_report", {})
@@ -132,6 +141,7 @@ def _build_case_summary_metrics(
             "candidate_count": candidate_count,
             "processed_candidates": len(ranked_candidates),
         },
+        "objective_weights": objective_weights,
         "optimization": optimization_summary,
         "candidates": {
             "summary": candidate_summary,

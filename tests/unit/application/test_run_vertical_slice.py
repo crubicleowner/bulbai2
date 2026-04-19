@@ -91,7 +91,7 @@ def test_run_vertical_slice_fails_fast_when_no_candidates_are_evaluated(
     source_path = tmp_path / "demo.stl"
     _write_valid_stl(source_path)
 
-    def return_empty_results(self, candidates: list[dict]) -> list[dict]:
+    def return_empty_results(self, candidates: list[dict], objective_weights: dict[str, float] | None = None) -> list[dict]:
         return []
 
     monkeypatch.setattr(
@@ -212,6 +212,53 @@ def test_run_vertical_slice_respects_requested_candidate_count(tmp_path: Path) -
     assert len(evaluation_index) == 5
     assert "Candidate count: 5" in report_html
     assert "Runtime budget: 12 h" in report_html
+
+
+def test_run_vertical_slice_applies_custom_objective_weights(tmp_path: Path) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    default_summary = run_vertical_slice(
+        project_root=tmp_path / "projects-default",
+        command=CreateCaseCommand(
+            case_name="weights-default",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+    weighted_summary = run_vertical_slice(
+        project_root=tmp_path / "projects-weighted",
+        command=CreateCaseCommand(
+            case_name="weights-custom",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+            resistance_weight=1.4,
+            axial_gain_weight=0.2,
+            draft_reduction_weight=0.0,
+            beam_growth_weight=0.2,
+        ),
+    )
+
+    default_case_dir = tmp_path / "projects-default" / default_summary.case_id
+    weighted_case_dir = tmp_path / "projects-weighted" / weighted_summary.case_id
+    default_eval = json.loads((default_case_dir / "evaluation_index.json").read_text(encoding="utf-8"))
+    weighted_eval = json.loads((weighted_case_dir / "evaluation_index.json").read_text(encoding="utf-8"))
+    weighted_metadata = json.loads((weighted_case_dir / "metadata.json").read_text(encoding="utf-8"))
+    weighted_report = (weighted_case_dir / "outputs" / "reports" / "report.html").read_text(encoding="utf-8")
+
+    assert weighted_metadata["create_case_command"]["resistance_weight"] == 1.4
+    assert weighted_metadata["create_case_command"]["axial_gain_weight"] == 0.2
+    assert weighted_eval[0]["mid_score"] != default_eval[0]["mid_score"]
+    assert "Objective weights" in weighted_report
+    assert "Resistance weight: 1.4" in weighted_report
 
 
 def test_run_vertical_slice_marks_case_failed_when_source_stl_is_missing(

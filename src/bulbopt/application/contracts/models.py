@@ -16,6 +16,10 @@ class CreateCaseCommand:
     optimization_mode: str = 'generate_new_bulb'
     runtime_budget_hours: int = 8
     candidate_count: int = 3
+    resistance_weight: float = 1.0
+    axial_gain_weight: float = 0.8
+    draft_reduction_weight: float = 0.1
+    beam_growth_weight: float = 0.05
 
 
 @dataclass(slots=True)
