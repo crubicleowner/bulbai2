@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QDoubleSpinBox, QLineEdit, QSpinBox
+from PySide6.QtWidgets import QApplication, QLabel, QListWidget, QPushButton, QDoubleSpinBox, QLineEdit, QSpinBox
 
 from bulbopt.app.main import build_cli_banner
 from bulbopt.application.contracts.models import CaseSummary
@@ -44,6 +44,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         geometry_summary = central_widget.findChild(QLabel, "geometry_summary_label")
         evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
         candidates_summary = central_widget.findChild(QLabel, "candidates_summary_label")
+        candidates_list = central_widget.findChild(QListWidget, "candidates_list_widget")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
 
@@ -57,6 +58,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert geometry_summary is not None
         assert evaluation_summary is not None
         assert candidates_summary is not None
+        assert candidates_list is not None
         assert open_case_button is not None
         assert open_report_button is not None
         assert app_name.text() == "BulbOpt Desktop"
@@ -68,6 +70,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert "not available" in geometry_summary.text()
         assert "not available" in evaluation_summary.text()
         assert "not available" in candidates_summary.text()
+        assert candidates_list.count() == 0
         assert open_case_button.isEnabled() is False
         assert open_report_button.isEnabled() is False
     finally:
@@ -141,6 +144,11 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
                 "geometry": "Geometry summary: V=120 F=240 watertight=no axis=0 slenderness=7.5",
                 "evaluation": "Evaluation summary: cand-1 fast=1.0 mid=9.0 resistance=4.08",
                 "candidates": "Candidates: cand-1 mid=9.0 | cand-2 mid=8.0 | cand-3 mid=7.0",
+                "candidate_rows": [
+                    "cand-1 | fast=1.0 | mid=9.0",
+                    "cand-2 | fast=0.9 | mid=8.0",
+                    "cand-3 | fast=0.8 | mid=7.0",
+                ],
             },
         )
 
@@ -153,6 +161,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         geometry_summary = central_widget.findChild(QLabel, "geometry_summary_label")
         evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
         candidates_summary = central_widget.findChild(QLabel, "candidates_summary_label")
+        candidates_list = central_widget.findChild(QListWidget, "candidates_list_widget")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
 
@@ -162,6 +171,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert geometry_summary is not None
         assert evaluation_summary is not None
         assert candidates_summary is not None
+        assert candidates_list is not None
         assert open_case_button is not None
         assert open_report_button is not None
 
@@ -180,6 +190,8 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert "resistance=4.08" in evaluation_summary.text()
         assert "cand-2" in candidates_summary.text()
         assert "cand-3" in candidates_summary.text()
+        assert candidates_list.count() == 3
+        assert "cand-2" in candidates_list.item(1).text()
         assert open_case_button.isEnabled() is True
         assert open_report_button.isEnabled() is True
     finally:
@@ -280,6 +292,8 @@ def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypat
         assert "candidate-1" in results["candidates"]
         assert "candidate-3" in results["candidates"]
         assert "mid=8.1" in results["candidates"]
+        assert len(results["candidate_rows"]) == 2
+        assert "candidate-1" in results["candidate_rows"][0]
     finally:
         window.close()
         app.processEvents()

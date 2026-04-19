@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
 from bulbopt.app.bootstrap import bootstrap_application
 from bulbopt.storage.filesystem.json_store import JsonStore
@@ -22,6 +22,7 @@ class MainWindow(QMainWindow):
         self._geometry_summary_label: QLabel | None = None
         self._evaluation_summary_label: QLabel | None = None
         self._candidates_summary_label: QLabel | None = None
+        self._candidates_list_widget: QListWidget | None = None
         self._open_case_button: QPushButton | None = None
         self._open_report_button: QPushButton | None = None
         self._last_case_dir: Path | None = None
@@ -64,6 +65,8 @@ class MainWindow(QMainWindow):
             central_widget,
         )
         self._candidates_summary_label.setObjectName("candidates_summary_label")
+        self._candidates_list_widget = QListWidget(central_widget)
+        self._candidates_list_widget.setObjectName("candidates_list_widget")
         self._open_case_button = QPushButton("Open Case Folder", central_widget)
         self._open_case_button.setObjectName("open_case_button")
         self._open_case_button.setEnabled(False)
@@ -83,6 +86,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._geometry_summary_label)
         layout.addWidget(self._evaluation_summary_label)
         layout.addWidget(self._candidates_summary_label)
+        layout.addWidget(self._candidates_list_widget)
         layout.addWidget(self._open_case_button)
         layout.addWidget(self._open_report_button)
         layout.addStretch(1)
@@ -97,6 +101,7 @@ class MainWindow(QMainWindow):
             or self._geometry_summary_label is None
             or self._evaluation_summary_label is None
             or self._candidates_summary_label is None
+            or self._candidates_list_widget is None
             or self._open_case_button is None
             or self._open_report_button is None
         ):
@@ -111,6 +116,7 @@ class MainWindow(QMainWindow):
         self._geometry_summary_label.setText("Geometry summary: not available")
         self._evaluation_summary_label.setText("Evaluation summary: not available")
         self._candidates_summary_label.setText("Candidates summary: not available")
+        self._candidates_list_widget.clear()
 
         try:
             summary = self.services["run_vertical_slice"](**payload)
@@ -133,6 +139,7 @@ class MainWindow(QMainWindow):
         self._geometry_summary_label.setText(results_payload["geometry"])
         self._evaluation_summary_label.setText(results_payload["evaluation"])
         self._candidates_summary_label.setText(results_payload["candidates"])
+        self._candidates_list_widget.addItems(results_payload["candidate_rows"])
         self._open_case_button.setEnabled(True)
         self._open_report_button.setEnabled(True)
 
@@ -151,6 +158,7 @@ class MainWindow(QMainWindow):
         geometry_summary = "Geometry summary: not available"
         evaluation_summary = "Evaluation summary: not available"
         candidates_summary = "Candidates summary: not available"
+        candidate_rows: list[str] = []
 
         geometry_path = case_dir / "working" / "repaired" / "geometry_analysis.json"
         evaluation_path = case_dir / "evaluation_index.json"
@@ -170,9 +178,13 @@ class MainWindow(QMainWindow):
             evaluation_payload = self._json_store.read(evaluation_path)
             ranked_candidates = []
             for item in evaluation_payload:
-                ranked_candidates.append(
-                    f"{item.get('candidate_id', 'n/a')} mid={item.get('mid_score', 'n/a')}"
+                candidate_row = (
+                    f"{item.get('candidate_id', 'n/a')} | "
+                    f"fast={item.get('fast_score', 'n/a')} | "
+                    f"mid={item.get('mid_score', 'n/a')}"
                 )
+                candidate_rows.append(candidate_row)
+                ranked_candidates.append(f"{item.get('candidate_id', 'n/a')} mid={item.get('mid_score', 'n/a')}")
             if ranked_candidates:
                 candidates_summary = "Candidates: " + " | ".join(ranked_candidates)
 
@@ -203,4 +215,5 @@ class MainWindow(QMainWindow):
             "geometry": geometry_summary,
             "evaluation": evaluation_summary,
             "candidates": candidates_summary,
+            "candidate_rows": candidate_rows,
         }
