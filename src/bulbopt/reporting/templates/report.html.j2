@@ -46,6 +46,7 @@
     <p>Volume delta: {{ best_candidate.hydrostatics_metrics.volume_delta_pct }}%</p>
     <p>Draft delta: {{ best_candidate.hydrostatics_metrics.draft_delta_m }}</p>
     <p>Hydrostatic penalty: {{ best_candidate.score_components.hydrostatic_penalty }}</p>
+    <p>Constraint status: {{ best_candidate.hydrostatics_metrics.constraint_status }}</p>
     {% endif %}
     {% endif %}
     {% if ranked_candidates %}

@@ -143,6 +143,8 @@ def _build_case_summary_metrics(
             "volume_delta_pct": hydrostatics_metrics.get("volume_delta_pct"),
             "draft_delta_m": hydrostatics_metrics.get("draft_delta_m"),
             "hydrostatic_penalty": score_components.get("hydrostatic_penalty"),
+            "constraint_status": hydrostatics_metrics.get("constraint_status"),
+            "warnings": hydrostatics_metrics.get("warnings", []),
         },
         "execution": {
             "runtime_budget_hours": runtime_budget_hours,

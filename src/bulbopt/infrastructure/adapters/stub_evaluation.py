@@ -114,17 +114,27 @@ class StubEvaluationAdapter:
         candidate_mesh: trimesh.Trimesh,
         repaired_mesh: trimesh.Trimesh,
     ) -> dict[str, float]:
+        max_volume_delta_pct = 2.5
+        max_draft_delta_m = 0.05
         candidate_volume = self._mesh_volume_proxy(candidate_mesh)
         repaired_volume = self._mesh_volume_proxy(repaired_mesh)
         volume_delta_pct = abs(candidate_volume - repaired_volume) / max(repaired_volume, 1e-6) * 100.0
         draft_delta_m = geometry_metrics["draft_extent_m"] - float(repaired_mesh.extents.astype(float)[2])
         hydrostatic_penalty = (volume_delta_pct / 10.0) + abs(draft_delta_m)
+        warnings: list[str] = []
+        if volume_delta_pct > max_volume_delta_pct:
+            warnings.append("volume_delta_exceeds_limit")
+        if abs(draft_delta_m) > max_draft_delta_m:
+            warnings.append("draft_delta_exceeds_limit")
+        constraint_status = "warn" if warnings else "ok"
         return {
             "volume_proxy_m3": round(candidate_volume, 6),
             "reference_volume_proxy_m3": round(repaired_volume, 6),
             "volume_delta_pct": round(volume_delta_pct, 6),
             "draft_delta_m": round(draft_delta_m, 6),
             "hydrostatic_penalty": round(hydrostatic_penalty, 6),
+            "constraint_status": constraint_status,
+            "warnings": warnings,
         }
 
     def _build_score_components(

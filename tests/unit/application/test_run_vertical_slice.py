@@ -58,6 +58,8 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert case_payload["summary_metrics"]["hydrostatics"]["volume_delta_pct"] >= 0.0
     assert "draft_delta_m" in case_payload["summary_metrics"]["hydrostatics"]
     assert "hydrostatic_penalty" in case_payload["summary_metrics"]["hydrostatics"]
+    assert case_payload["summary_metrics"]["hydrostatics"]["constraint_status"] in {"ok", "warn"}
+    assert isinstance(case_payload["summary_metrics"]["hydrostatics"]["warnings"], list)
     assert case_payload["summary_metrics"]["execution"]["processed_candidates"] == 3
     assert case_payload["summary_metrics"]["optimization"]["ranked_count"] == 3
     assert len(case_payload["summary_metrics"]["candidates"]["rows"]) == 3
@@ -82,6 +84,7 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert evaluation_index[0]["geometry_metrics"]["surface_area_m2"] > 0.0
     assert evaluation_index[0]["hydrostatics_metrics"]["volume_proxy_m3"] > 0.0
     assert evaluation_index[0]["hydrostatics_metrics"]["volume_delta_pct"] >= 0.0
+    assert evaluation_index[0]["hydrostatics_metrics"]["constraint_status"] in {"ok", "warn"}
     assert evaluation_index[0]["score_components"]["resistance_proxy"] > 0.0
     assert evaluation_index[0]["score_components"]["hydrostatic_penalty"] >= 0.0
     assert evaluation_index[2]["mid_score"] < evaluation_index[0]["mid_score"]
@@ -94,6 +97,7 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert "Ranked candidates: 3" in report_html
     assert "Hydrostatics-lite" in report_html
     assert "Hydrostatic penalty" in report_html
+    assert "Constraint status" in report_html
 
 
 def test_run_vertical_slice_fails_fast_when_no_candidates_are_evaluated(

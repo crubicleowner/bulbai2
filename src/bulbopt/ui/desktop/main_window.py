@@ -402,6 +402,7 @@ class MainWindow(QMainWindow):
     def _format_hydrostatics_summary(self, payload: dict) -> str:
         return (
             "Hydrostatics-lite: "
+            f"status={payload.get('constraint_status', 'n/a')} "
             f"volume_delta={payload.get('volume_delta_pct', 'n/a')}% "
             f"draft_delta={payload.get('draft_delta_m', 'n/a')} "
             f"penalty={payload.get('hydrostatic_penalty', 'n/a')}"
