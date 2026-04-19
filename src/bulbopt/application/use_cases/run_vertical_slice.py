@@ -24,28 +24,34 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
     optimization = StubOptimizationAdapter()
     report = HtmlReportAdapter(template_root=_template_root())
 
-    geometry.prepare_geometry(case_dir, Path(command.source_path))
-    candidates = geometry.generate_candidates(case_dir, count=3)
-    repository.save_candidate_index(case.case_id, candidates)
+    try:
+        geometry.prepare_geometry(case_dir, Path(command.source_path))
+        candidates = geometry.generate_candidates(case_dir, count=3)
+        repository.save_candidate_index(case.case_id, candidates)
 
-    evaluated_candidates = evaluation.evaluate_candidates(candidates)
-    json_store.write(case_dir / "evaluation_index.json", evaluated_candidates)
-    best_candidate = optimization.choose_best(evaluated_candidates)
-    case.status = CaseStatus.ASSEMBLING_RESULTS
-    repository.save_case(case)
-    report.build_html_report(
-        case_dir,
-        {
-            "case_name": case.case_name,
-            "status": CaseStatus.COMPLETED.value,
-            "best_candidate_id": best_candidate["candidate_id"],
-            "openfoam_available": False,
-            "high_fidelity_used": False,
-        },
-    )
-    case.status = CaseStatus.COMPLETED
-    case.is_recoverable = False
-    repository.save_case(case)
+        evaluated_candidates = evaluation.evaluate_candidates(candidates)
+        json_store.write(case_dir / "evaluation_index.json", evaluated_candidates)
+        best_candidate = optimization.choose_best(evaluated_candidates)
+        case.status = CaseStatus.ASSEMBLING_RESULTS
+        repository.save_case(case)
+        report.build_html_report(
+            case_dir,
+            {
+                "case_name": case.case_name,
+                "status": CaseStatus.COMPLETED.value,
+                "best_candidate_id": best_candidate["candidate_id"],
+                "openfoam_available": False,
+                "high_fidelity_used": False,
+            },
+        )
+        case.status = CaseStatus.COMPLETED
+        case.is_recoverable = False
+        repository.save_case(case)
+    except OSError:
+        case.status = CaseStatus.FAILED
+        case.is_recoverable = True
+        repository.save_case(case)
+        raise
 
     return CaseSummary(
         case_id=case.case_id,
