@@ -41,6 +41,8 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         run_status = central_widget.findChild(QLabel, "run_status_label")
         artifacts_label = central_widget.findChild(QLabel, "artifacts_label")
         results_label = central_widget.findChild(QLabel, "results_panel_label")
+        geometry_summary = central_widget.findChild(QLabel, "geometry_summary_label")
+        evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
 
@@ -51,6 +53,8 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert run_status is not None
         assert artifacts_label is not None
         assert results_label is not None
+        assert geometry_summary is not None
+        assert evaluation_summary is not None
         assert open_case_button is not None
         assert open_report_button is not None
         assert app_name.text() == "BulbOpt Desktop"
@@ -59,6 +63,8 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert "Idle" in run_status.text()
         assert "No artifacts yet" in artifacts_label.text()
         assert "Results" in results_label.text()
+        assert "not available" in geometry_summary.text()
+        assert "not available" in evaluation_summary.text()
         assert open_case_button.isEnabled() is False
         assert open_report_button.isEnabled() is False
     finally:
@@ -125,18 +131,31 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
     window = MainWindow(project_root=tmp_path / "projects")
 
     try:
+        monkeypatch.setattr(
+            window,
+            "_load_case_results",
+            lambda case_dir, best_candidate_id: {
+                "geometry": "Geometry summary: V=120 F=240 watertight=no axis=0",
+                "evaluation": "Evaluation summary: cand-1 fast=1.0 mid=9.0",
+            },
+        )
+
         central_widget = window.centralWidget()
         assert central_widget is not None
 
         run_button = central_widget.findChild(QPushButton, "run_vertical_slice_button")
         run_status = central_widget.findChild(QLabel, "run_status_label")
         artifacts_label = central_widget.findChild(QLabel, "artifacts_label")
+        geometry_summary = central_widget.findChild(QLabel, "geometry_summary_label")
+        evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
 
         assert run_button is not None
         assert run_status is not None
         assert artifacts_label is not None
+        assert geometry_summary is not None
+        assert evaluation_summary is not None
         assert open_case_button is not None
         assert open_report_button is not None
 
@@ -149,6 +168,8 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert "cand-1" in run_status.text()
         assert "case-001" in artifacts_label.text()
         assert "report.html" in artifacts_label.text()
+        assert "V=120" in geometry_summary.text()
+        assert "cand-1" in evaluation_summary.text()
         assert open_case_button.isEnabled() is True
         assert open_report_button.isEnabled() is True
     finally:
@@ -203,6 +224,38 @@ def test_main_window_opens_case_and_report_artifacts(tmp_path: Path, monkeypatch
             tmp_path / "projects" / "case-101",
             tmp_path / "projects" / "case-101" / "outputs" / "reports" / "report.html",
         ]
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+
+    try:
+        case_dir = tmp_path / "projects" / "case-777"
+        (case_dir / "working" / "repaired").mkdir(parents=True)
+        (case_dir / "evaluation_index.json").write_text(
+            '[{"candidate_id":"candidate-3","fast_score":0.333,"mid_score":7.0}]',
+            encoding="utf-8",
+        )
+        (case_dir / "working" / "repaired" / "geometry_analysis.json").write_text(
+            (
+                '{"quality_report":{"vertices_count":14638,"faces_count":29272,'
+                '"watertight":false,"primary_axis":0}}'
+            ),
+            encoding="utf-8",
+        )
+
+        results = window._load_case_results(case_dir, "candidate-3")
+
+        assert "14638" in results["geometry"]
+        assert "29272" in results["geometry"]
+        assert "candidate-3" in results["evaluation"]
+        assert "7.0" in results["evaluation"]
     finally:
         window.close()
         app.processEvents()
