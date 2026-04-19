@@ -21,6 +21,7 @@ class MainWindow(QMainWindow):
         self._artifacts_label: QLabel | None = None
         self._geometry_summary_label: QLabel | None = None
         self._evaluation_summary_label: QLabel | None = None
+        self._candidates_summary_label: QLabel | None = None
         self._open_case_button: QPushButton | None = None
         self._open_report_button: QPushButton | None = None
         self._last_case_dir: Path | None = None
@@ -58,6 +59,11 @@ class MainWindow(QMainWindow):
             central_widget,
         )
         self._evaluation_summary_label.setObjectName("evaluation_summary_label")
+        self._candidates_summary_label = QLabel(
+            "Candidates summary: not available",
+            central_widget,
+        )
+        self._candidates_summary_label.setObjectName("candidates_summary_label")
         self._open_case_button = QPushButton("Open Case Folder", central_widget)
         self._open_case_button.setObjectName("open_case_button")
         self._open_case_button.setEnabled(False)
@@ -76,6 +82,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._artifacts_label)
         layout.addWidget(self._geometry_summary_label)
         layout.addWidget(self._evaluation_summary_label)
+        layout.addWidget(self._candidates_summary_label)
         layout.addWidget(self._open_case_button)
         layout.addWidget(self._open_report_button)
         layout.addStretch(1)
@@ -89,6 +96,7 @@ class MainWindow(QMainWindow):
             or self._artifacts_label is None
             or self._geometry_summary_label is None
             or self._evaluation_summary_label is None
+            or self._candidates_summary_label is None
             or self._open_case_button is None
             or self._open_report_button is None
         ):
@@ -102,6 +110,7 @@ class MainWindow(QMainWindow):
         self._open_report_button.setEnabled(False)
         self._geometry_summary_label.setText("Geometry summary: not available")
         self._evaluation_summary_label.setText("Evaluation summary: not available")
+        self._candidates_summary_label.setText("Candidates summary: not available")
 
         try:
             summary = self.services["run_vertical_slice"](**payload)
@@ -123,6 +132,7 @@ class MainWindow(QMainWindow):
         results_payload = self._load_case_results(self._last_case_dir, summary.best_candidate_id)
         self._geometry_summary_label.setText(results_payload["geometry"])
         self._evaluation_summary_label.setText(results_payload["evaluation"])
+        self._candidates_summary_label.setText(results_payload["candidates"])
         self._open_case_button.setEnabled(True)
         self._open_report_button.setEnabled(True)
 
@@ -140,6 +150,7 @@ class MainWindow(QMainWindow):
     def _load_case_results(self, case_dir: Path, best_candidate_id: str | None) -> dict[str, str]:
         geometry_summary = "Geometry summary: not available"
         evaluation_summary = "Evaluation summary: not available"
+        candidates_summary = "Candidates summary: not available"
 
         geometry_path = case_dir / "working" / "repaired" / "geometry_analysis.json"
         evaluation_path = case_dir / "evaluation_index.json"
@@ -157,6 +168,14 @@ class MainWindow(QMainWindow):
 
         if evaluation_path.exists():
             evaluation_payload = self._json_store.read(evaluation_path)
+            ranked_candidates = []
+            for item in evaluation_payload:
+                ranked_candidates.append(
+                    f"{item.get('candidate_id', 'n/a')} mid={item.get('mid_score', 'n/a')}"
+                )
+            if ranked_candidates:
+                candidates_summary = "Candidates: " + " | ".join(ranked_candidates)
+
             best_candidate = next(
                 (
                     item
@@ -183,4 +202,5 @@ class MainWindow(QMainWindow):
         return {
             "geometry": geometry_summary,
             "evaluation": evaluation_summary,
+            "candidates": candidates_summary,
         }

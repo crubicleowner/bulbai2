@@ -43,6 +43,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         results_label = central_widget.findChild(QLabel, "results_panel_label")
         geometry_summary = central_widget.findChild(QLabel, "geometry_summary_label")
         evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
+        candidates_summary = central_widget.findChild(QLabel, "candidates_summary_label")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
 
@@ -55,6 +56,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert results_label is not None
         assert geometry_summary is not None
         assert evaluation_summary is not None
+        assert candidates_summary is not None
         assert open_case_button is not None
         assert open_report_button is not None
         assert app_name.text() == "BulbOpt Desktop"
@@ -65,6 +67,7 @@ def test_desktop_shell_smoke(tmp_path: Path, monkeypatch) -> None:
         assert "Results" in results_label.text()
         assert "not available" in geometry_summary.text()
         assert "not available" in evaluation_summary.text()
+        assert "not available" in candidates_summary.text()
         assert open_case_button.isEnabled() is False
         assert open_report_button.isEnabled() is False
     finally:
@@ -137,6 +140,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
             lambda case_dir, best_candidate_id: {
                 "geometry": "Geometry summary: V=120 F=240 watertight=no axis=0 slenderness=7.5",
                 "evaluation": "Evaluation summary: cand-1 fast=1.0 mid=9.0 resistance=4.08",
+                "candidates": "Candidates: cand-1 mid=9.0 | cand-2 mid=8.0 | cand-3 mid=7.0",
             },
         )
 
@@ -148,6 +152,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         artifacts_label = central_widget.findChild(QLabel, "artifacts_label")
         geometry_summary = central_widget.findChild(QLabel, "geometry_summary_label")
         evaluation_summary = central_widget.findChild(QLabel, "evaluation_summary_label")
+        candidates_summary = central_widget.findChild(QLabel, "candidates_summary_label")
         open_case_button = central_widget.findChild(QPushButton, "open_case_button")
         open_report_button = central_widget.findChild(QPushButton, "open_report_button")
 
@@ -156,6 +161,7 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert artifacts_label is not None
         assert geometry_summary is not None
         assert evaluation_summary is not None
+        assert candidates_summary is not None
         assert open_case_button is not None
         assert open_report_button is not None
 
@@ -172,6 +178,8 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert "slenderness=7.5" in geometry_summary.text()
         assert "cand-1" in evaluation_summary.text()
         assert "resistance=4.08" in evaluation_summary.text()
+        assert "cand-2" in candidates_summary.text()
+        assert "cand-3" in candidates_summary.text()
         assert open_case_button.isEnabled() is True
         assert open_report_button.isEnabled() is True
     finally:
@@ -242,9 +250,14 @@ def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypat
         (case_dir / "working" / "repaired").mkdir(parents=True)
         (case_dir / "evaluation_index.json").write_text(
             (
-                '[{"candidate_id":"candidate-3","fast_score":0.333,"mid_score":7.0,'
+                '['
+                '{"candidate_id":"candidate-1","fast_score":0.31,"mid_score":8.1,'
+                '"geometry_metrics":{"slenderness_ratio":7.2},'
+                '"score_components":{"resistance_proxy":0.255}},'
+                '{"candidate_id":"candidate-3","fast_score":0.333,"mid_score":7.0,'
                 '"geometry_metrics":{"slenderness_ratio":7.6},'
-                '"score_components":{"resistance_proxy":0.244}}]'
+                '"score_components":{"resistance_proxy":0.244}}'
+                ']'
             ),
             encoding="utf-8",
         )
@@ -264,6 +277,9 @@ def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypat
         assert "candidate-3" in results["evaluation"]
         assert "7.0" in results["evaluation"]
         assert "0.244" in results["evaluation"]
+        assert "candidate-1" in results["candidates"]
+        assert "candidate-3" in results["candidates"]
+        assert "mid=8.1" in results["candidates"]
     finally:
         window.close()
         app.processEvents()
