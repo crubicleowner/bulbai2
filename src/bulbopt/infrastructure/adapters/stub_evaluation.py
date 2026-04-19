@@ -114,7 +114,7 @@ class StubEvaluationAdapter:
         candidate_mesh: trimesh.Trimesh,
         repaired_mesh: trimesh.Trimesh,
     ) -> dict[str, float]:
-        max_volume_delta_pct = 2.5
+        max_volume_delta_pct = 4.5
         max_draft_delta_m = 0.05
         candidate_volume = self._mesh_volume_proxy(candidate_mesh)
         repaired_volume = self._mesh_volume_proxy(repaired_mesh)

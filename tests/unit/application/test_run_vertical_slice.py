@@ -342,3 +342,109 @@ def test_run_vertical_slice_marks_case_failed_when_source_stl_is_unreadable(
 
     assert case_payload["status"] == "failed"
     assert case_payload["is_recoverable"] is True
+
+
+def test_run_vertical_slice_marks_case_completed_with_warnings_when_best_candidate_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    def return_warning_results(self, candidates: list[dict], objective_weights: dict[str, float] | None = None) -> list[dict]:
+        return [
+            {
+                **candidates[0],
+                "status": "mid_score_ready",
+                "fast_score": 1.0,
+                "mid_score": 0.5,
+                "objective_weights": objective_weights or {},
+                "geometry_metrics": {
+                    "axial_extent_m": 4.0,
+                    "beam_extent_m": 1.5,
+                    "draft_extent_m": 1.0,
+                    "surface_area_m2": 20.0,
+                    "slenderness_ratio": 2.6,
+                    "nose_area_proxy_m2": 1.2,
+                    "axial_gain_m": 0.1,
+                    "beam_growth_m": 0.0,
+                    "draft_reduction_m": 0.0,
+                },
+                "hydrostatics_metrics": {
+                    "volume_proxy_m3": 6.0,
+                    "reference_volume_proxy_m3": 5.0,
+                    "volume_delta_pct": 5.0,
+                    "draft_delta_m": 0.08,
+                    "hydrostatic_penalty": 0.58,
+                    "constraint_status": "warn",
+                    "warnings": ["volume_delta_exceeds_limit", "draft_delta_exceeds_limit"],
+                },
+                "score_components": {
+                    "frontal_area_proxy_m2": 1.5,
+                    "resistance_proxy": 0.4,
+                    "hydrostatic_penalty": 0.58,
+                },
+            },
+            {
+                **candidates[1],
+                "status": "mid_score_ready",
+                "fast_score": 0.9,
+                "mid_score": 1.2,
+                "objective_weights": objective_weights or {},
+                "geometry_metrics": {
+                    "axial_extent_m": 3.9,
+                    "beam_extent_m": 1.5,
+                    "draft_extent_m": 1.0,
+                    "surface_area_m2": 19.5,
+                    "slenderness_ratio": 2.5,
+                    "nose_area_proxy_m2": 1.1,
+                    "axial_gain_m": 0.05,
+                    "beam_growth_m": 0.0,
+                    "draft_reduction_m": 0.0,
+                },
+                "hydrostatics_metrics": {
+                    "volume_proxy_m3": 5.05,
+                    "reference_volume_proxy_m3": 5.0,
+                    "volume_delta_pct": 1.0,
+                    "draft_delta_m": 0.01,
+                    "hydrostatic_penalty": 0.11,
+                    "constraint_status": "ok",
+                    "warnings": [],
+                },
+                "score_components": {
+                    "frontal_area_proxy_m2": 1.5,
+                    "resistance_proxy": 0.45,
+                    "hydrostatic_penalty": 0.11,
+                },
+            },
+        ]
+
+    monkeypatch.setattr(
+        run_vertical_slice_module.StubEvaluationAdapter,
+        "evaluate_candidates",
+        return_warning_results,
+    )
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="warning-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    report_html = (case_dir / "outputs" / "reports" / "report.html").read_text(encoding="utf-8")
+
+    assert summary.status == "completed_with_warnings"
+    assert case_payload["status"] == "completed_with_warnings"
+    assert case_payload["is_recoverable"] is False
+    assert case_payload["summary_metrics"]["hydrostatics"]["constraint_status"] == "warn"
+    assert "volume_delta_exceeds_limit" in case_payload["summary_metrics"]["hydrostatics"]["warnings"]
+    assert "completed_with_warnings" in report_html

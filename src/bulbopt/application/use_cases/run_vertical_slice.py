@@ -62,7 +62,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
             case_dir,
             {
                 "case_name": case.case_name,
-                "status": CaseStatus.COMPLETED.value,
+                "status": _final_case_status(best_candidate).value,
                 "best_candidate_id": best_candidate["candidate_id"],
                 "best_candidate": best_candidate,
                 "ranked_candidates": ranked_candidates,
@@ -75,7 +75,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 "high_fidelity_used": False,
             },
         )
-        case.status = CaseStatus.COMPLETED
+        case.status = _final_case_status(best_candidate)
         case.is_recoverable = False
         repository.save_case(case)
     except Exception:
@@ -94,6 +94,13 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
 
 def _template_root() -> Path:
     return Path(__file__).resolve().parents[2] / "reporting" / "templates"
+
+
+def _final_case_status(best_candidate: dict) -> CaseStatus:
+    hydrostatics = best_candidate.get("hydrostatics_metrics", {})
+    if hydrostatics.get("constraint_status") == "warn":
+        return CaseStatus.COMPLETED_WITH_WARNINGS
+    return CaseStatus.COMPLETED
 
 
 def _build_case_summary_metrics(

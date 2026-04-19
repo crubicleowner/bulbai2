@@ -174,8 +174,11 @@ class MainWindow(QMainWindow):
         project_root = self.services["settings"].project_root
         self._last_case_dir = project_root / summary.case_id
         self._last_report_path = self._last_case_dir / "outputs" / "reports" / "report.html"
+        status_label = summary.status
+        if summary.status == "completed":
+            status_label = "Completed"
         self._run_status_label.setText(
-            "Completed: "
+            f"{status_label}: "
             f"{summary.case_id} | best candidate {summary.best_candidate_id or 'n/a'}"
         )
         self._artifacts_label.setText(

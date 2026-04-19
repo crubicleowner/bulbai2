@@ -249,6 +249,69 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         app.processEvents()
 
 
+def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    def fake_runner(**kwargs):
+        return CaseSummary(
+            case_id="case-301",
+            case_name=str(kwargs["case_name"]),
+            status="completed_with_warnings",
+            best_candidate_id="cand-warn",
+        )
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": fake_runner,
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+
+    try:
+        monkeypatch.setattr(
+            window,
+            "_load_case_results",
+            lambda case_dir, best_candidate_id: {
+                "geometry": "Geometry summary: V=120 F=240 watertight=no axis=0 slenderness=7.5",
+                "evaluation": "Evaluation summary: cand-warn fast=1.0 mid=0.5 resistance=4.08",
+                "execution": "Execution summary: runtime=8 h candidates=3 processed=3",
+                "weights": "Objective weights: resistance=1.0 axial=0.8 draft=0.1 beam=0.05",
+                "hydrostatics": "Hydrostatics-lite: status=warn volume_delta=5.0% draft_delta=0.08 penalty=0.58",
+                "optimization": "Optimization summary: best=cand-warn ranked=3 spread=0.7",
+                "candidates": "Candidates: cand-warn mid=0.5 | cand-2 mid=1.2 | cand-3 mid=1.4",
+                "candidate_rows": [
+                    "cand-warn | fast=1.0 | mid=0.5",
+                    "cand-2 | fast=0.9 | mid=1.2",
+                    "cand-3 | fast=0.8 | mid=1.4",
+                ],
+                "best_candidate_path": tmp_path / "projects" / "case-301" / "working" / "candidates" / "cand-warn.stl",
+            },
+        )
+
+        central_widget = window.centralWidget()
+        assert central_widget is not None
+        run_button = central_widget.findChild(QPushButton, "run_vertical_slice_button")
+        run_status = central_widget.findChild(QLabel, "run_status_label")
+        hydrostatics_summary = central_widget.findChild(QLabel, "hydrostatics_summary_label")
+
+        assert run_button is not None
+        assert run_status is not None
+        assert hydrostatics_summary is not None
+
+        run_button.click()
+        app.processEvents()
+
+        assert "completed_with_warnings" in run_status.text()
+        assert "status=warn" in hydrostatics_summary.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_opens_case_report_and_best_candidate_artifacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
 
