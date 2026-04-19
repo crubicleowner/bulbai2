@@ -51,6 +51,11 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert summary.best_candidate_id == "candidate-3"
     assert case_payload["status"] == "completed"
     assert case_payload["is_recoverable"] is False
+    assert case_payload["summary_metrics"]["geometry"]["vertices_count"] > 0
+    assert case_payload["summary_metrics"]["evaluation"]["best_candidate_id"] == "candidate-3"
+    assert case_payload["summary_metrics"]["execution"]["processed_candidates"] == 3
+    assert case_payload["summary_metrics"]["optimization"]["ranked_count"] == 3
+    assert len(case_payload["summary_metrics"]["candidates"]["rows"]) == 3
     assert metadata_payload["create_case_command"]["candidate_count"] == 3
     assert metadata_payload["create_case_command"]["speed_knots"] == [18.0, 20.0]
     assert metadata_payload["create_case_command"]["runtime_budget_hours"] == 8

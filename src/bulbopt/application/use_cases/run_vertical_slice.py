@@ -25,7 +25,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
     report = HtmlReportAdapter(template_root=_template_root())
 
     try:
-        geometry.prepare_geometry(case_dir, Path(command.source_path))
+        geometry_analysis = geometry.prepare_geometry(case_dir, Path(command.source_path))
         candidates = geometry.generate_candidates(case_dir, count=command.candidate_count)
         repository.save_candidate_index(case.case_id, candidates)
 
@@ -40,6 +40,14 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
         artifacts_index = json_store.read(artifacts_index_path)
         artifacts_index["optimization_summary"] = str(optimization_summary_path)
         json_store.write(artifacts_index_path, artifacts_index)
+        case.summary_metrics = _build_case_summary_metrics(
+            geometry_analysis=geometry_analysis,
+            best_candidate=best_candidate,
+            optimization_summary=optimization_summary,
+            runtime_budget_hours=command.runtime_budget_hours,
+            candidate_count=command.candidate_count,
+            ranked_candidates=ranked_candidates,
+        )
         case.status = CaseStatus.ASSEMBLING_RESULTS
         repository.save_case(case)
         report.build_html_report(
@@ -77,3 +85,56 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
 
 def _template_root() -> Path:
     return Path(__file__).resolve().parents[2] / "reporting" / "templates"
+
+
+def _build_case_summary_metrics(
+    geometry_analysis: dict,
+    best_candidate: dict,
+    optimization_summary: dict,
+    runtime_budget_hours: int,
+    candidate_count: int,
+    ranked_candidates: list[dict],
+) -> dict:
+    quality_report = geometry_analysis.get("quality_report", {})
+    geometry_metrics = best_candidate.get("geometry_metrics", {})
+    score_components = best_candidate.get("score_components", {})
+    candidate_rows = [
+        (
+            f"{item.get('candidate_id', 'n/a')} | "
+            f"fast={item.get('fast_score', 'n/a')} | "
+            f"mid={item.get('mid_score', 'n/a')}"
+        )
+        for item in ranked_candidates
+    ]
+    candidate_summary = "Candidates summary: not available"
+    if ranked_candidates:
+        candidate_summary = "Candidates: " + " | ".join(
+            f"{item.get('candidate_id', 'n/a')} mid={item.get('mid_score', 'n/a')}"
+            for item in ranked_candidates
+        )
+
+    return {
+        "geometry": {
+            "vertices_count": quality_report.get("vertices_count"),
+            "faces_count": quality_report.get("faces_count"),
+            "watertight": quality_report.get("watertight"),
+            "primary_axis": quality_report.get("primary_axis"),
+            "slenderness_ratio": geometry_metrics.get("slenderness_ratio"),
+        },
+        "evaluation": {
+            "best_candidate_id": best_candidate.get("candidate_id"),
+            "fast_score": best_candidate.get("fast_score"),
+            "mid_score": best_candidate.get("mid_score"),
+            "resistance_proxy": score_components.get("resistance_proxy"),
+        },
+        "execution": {
+            "runtime_budget_hours": runtime_budget_hours,
+            "candidate_count": candidate_count,
+            "processed_candidates": len(ranked_candidates),
+        },
+        "optimization": optimization_summary,
+        "candidates": {
+            "summary": candidate_summary,
+            "rows": candidate_rows,
+        },
+    }

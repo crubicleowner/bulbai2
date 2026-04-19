@@ -181,22 +181,30 @@ class MainWindow(QMainWindow):
         optimization_summary = "Optimization summary: not available"
         candidates_summary = "Candidates summary: not available"
         candidate_rows: list[str] = []
+        quality_report: dict = {}
 
+        case_path = case_dir / "case.json"
         geometry_path = case_dir / "working" / "repaired" / "geometry_analysis.json"
         evaluation_path = case_dir / "evaluation_index.json"
         metadata_path = case_dir / "metadata.json"
         optimization_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
 
+        if case_path.exists():
+            case_payload = self._json_store.read(case_path)
+            summary_metrics = case_payload.get("summary_metrics", {})
+            if summary_metrics:
+                summary_results = self._build_results_from_case_summary(summary_metrics)
+                geometry_summary = summary_results["geometry"]
+                evaluation_summary = summary_results["evaluation"]
+                execution_summary = summary_results["execution"]
+                optimization_summary = summary_results["optimization"]
+                candidates_summary = summary_results["candidates"]
+                candidate_rows = summary_results["candidate_rows"]
+
         if geometry_path.exists():
             geometry_payload = self._json_store.read(geometry_path)
             quality_report = geometry_payload.get("quality_report", {})
-            geometry_summary = (
-                "Geometry summary: "
-                f"V={quality_report.get('vertices_count', 'n/a')} "
-                f"F={quality_report.get('faces_count', 'n/a')} "
-                f"watertight={'yes' if quality_report.get('watertight') else 'no'} "
-                f"axis={quality_report.get('primary_axis', 'n/a')}"
-            )
+            geometry_summary = self._format_geometry_summary(quality_report)
 
         if evaluation_path.exists():
             evaluation_payload = self._json_store.read(evaluation_path)
@@ -223,16 +231,19 @@ class MainWindow(QMainWindow):
             if best_candidate is not None:
                 geometry_metrics = best_candidate.get("geometry_metrics", {})
                 score_components = best_candidate.get("score_components", {})
-                geometry_summary = (
-                    f"{geometry_summary} "
-                    f"slenderness={geometry_metrics.get('slenderness_ratio', 'n/a')}"
+                geometry_summary = self._format_geometry_summary(
+                    {
+                        **quality_report,
+                        "slenderness_ratio": geometry_metrics.get("slenderness_ratio", "n/a"),
+                    }
                 )
-                evaluation_summary = (
-                    "Evaluation summary: "
-                    f"{best_candidate.get('candidate_id', 'n/a')} "
-                    f"fast={best_candidate.get('fast_score', 'n/a')} "
-                    f"mid={best_candidate.get('mid_score', 'n/a')} "
-                    f"resistance={score_components.get('resistance_proxy', 'n/a')}"
+                evaluation_summary = self._format_evaluation_summary(
+                    {
+                        "best_candidate_id": best_candidate.get("candidate_id", "n/a"),
+                        "fast_score": best_candidate.get("fast_score", "n/a"),
+                        "mid_score": best_candidate.get("mid_score", "n/a"),
+                        "resistance_proxy": score_components.get("resistance_proxy", "n/a"),
+                    }
                 )
 
         if metadata_path.exists():
@@ -241,21 +252,17 @@ class MainWindow(QMainWindow):
             runtime_budget = command_payload.get("runtime_budget_hours", "n/a")
             candidate_count = command_payload.get("candidate_count", "n/a")
             processed_count = len(candidate_rows)
-            execution_summary = (
-                "Execution summary: "
-                f"runtime={runtime_budget} h "
-                f"candidates={candidate_count} "
-                f"processed={processed_count}"
+            execution_summary = self._format_execution_summary(
+                {
+                    "runtime_budget_hours": runtime_budget,
+                    "candidate_count": candidate_count,
+                    "processed_candidates": processed_count,
+                }
             )
 
         if optimization_path.exists():
             optimization_payload = self._json_store.read(optimization_path)
-            optimization_summary = (
-                "Optimization summary: "
-                f"best={optimization_payload.get('best_candidate_id', 'n/a')} "
-                f"ranked={optimization_payload.get('ranked_count', 'n/a')} "
-                f"spread={optimization_payload.get('mid_score_spread', 'n/a')}"
-            )
+            optimization_summary = self._format_optimization_summary(optimization_payload)
 
         return {
             "geometry": geometry_summary,
@@ -265,3 +272,55 @@ class MainWindow(QMainWindow):
             "candidates": candidates_summary,
             "candidate_rows": candidate_rows,
         }
+
+    def _build_results_from_case_summary(self, summary_metrics: dict) -> dict[str, str | list[str]]:
+        geometry_payload = summary_metrics.get("geometry", {})
+        evaluation_payload = summary_metrics.get("evaluation", {})
+        execution_payload = summary_metrics.get("execution", {})
+        optimization_payload = summary_metrics.get("optimization", {})
+        candidates_payload = summary_metrics.get("candidates", {})
+        return {
+            "geometry": self._format_geometry_summary(geometry_payload),
+            "evaluation": self._format_evaluation_summary(evaluation_payload),
+            "execution": self._format_execution_summary(execution_payload),
+            "optimization": self._format_optimization_summary(optimization_payload),
+            "candidates": candidates_payload.get("summary", "Candidates summary: not available"),
+            "candidate_rows": candidates_payload.get("rows", []),
+        }
+
+    def _format_geometry_summary(self, payload: dict) -> str:
+        summary = (
+            "Geometry summary: "
+            f"V={payload.get('vertices_count', 'n/a')} "
+            f"F={payload.get('faces_count', 'n/a')} "
+            f"watertight={'yes' if payload.get('watertight') else 'no'} "
+            f"axis={payload.get('primary_axis', 'n/a')}"
+        )
+        if "slenderness_ratio" in payload:
+            summary = f"{summary} slenderness={payload.get('slenderness_ratio', 'n/a')}"
+        return summary
+
+    def _format_evaluation_summary(self, payload: dict) -> str:
+        return (
+            "Evaluation summary: "
+            f"{payload.get('best_candidate_id', 'n/a')} "
+            f"fast={payload.get('fast_score', 'n/a')} "
+            f"mid={payload.get('mid_score', 'n/a')} "
+            f"resistance={payload.get('resistance_proxy', 'n/a')}"
+        )
+
+    def _format_execution_summary(self, payload: dict) -> str:
+        return (
+            "Execution summary: "
+            f"runtime={payload.get('runtime_budget_hours', 'n/a')} h "
+            f"candidates={payload.get('candidate_count', 'n/a')} "
+            f"processed={payload.get('processed_candidates', 'n/a')}"
+        )
+
+    def _format_optimization_summary(self, payload: dict) -> str:
+        return (
+            "Optimization summary: "
+            f"best={payload.get('best_candidate_id', 'n/a')} "
+            f"ranked={payload.get('ranked_count', 'n/a')} "
+            f"spread={payload.get('mid_score_spread', 'n/a')}"
+        )

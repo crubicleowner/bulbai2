@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 
 class CaseStatus(str, Enum):
@@ -43,6 +44,7 @@ class OptimizationCase:
     updated_at: str
     is_recoverable: bool
     source_path: str | None = None
+    summary_metrics: dict[str, Any] = field(default_factory=dict)
     candidates: list[CandidateVariant] = field(default_factory=list)
 
     @classmethod

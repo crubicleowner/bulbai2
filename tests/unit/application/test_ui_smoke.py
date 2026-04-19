@@ -337,3 +337,49 @@ def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypat
     finally:
         window.close()
         app.processEvents()
+
+
+def test_main_window_loads_case_results_from_case_summary_metrics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+
+    try:
+        case_dir = tmp_path / "projects" / "case-888"
+        case_dir.mkdir(parents=True)
+        (case_dir / "case.json").write_text(
+            (
+                '{'
+                '"summary_metrics":{'
+                '"geometry":{"vertices_count":999,"faces_count":111,"watertight":true,"primary_axis":0,"slenderness_ratio":6.2},'
+                '"evaluation":{"best_candidate_id":"candidate-9","fast_score":0.2,"mid_score":1.5,"resistance_proxy":3.14},'
+                '"execution":{"runtime_budget_hours":7,"candidate_count":4,"processed_candidates":4},'
+                '"optimization":{"best_candidate_id":"candidate-9","ranked_count":4,"mid_score_spread":0.8},'
+                '"candidates":{"summary":"Candidates: candidate-9 mid=1.5 | candidate-7 mid=2.3","rows":["candidate-9 | fast=0.2 | mid=1.5","candidate-7 | fast=0.3 | mid=2.3"]}'
+                '}'
+                '}'
+            ),
+            encoding="utf-8",
+        )
+
+        results = window._load_case_results(case_dir, "candidate-9")
+
+        assert "999" in results["geometry"]
+        assert "111" in results["geometry"]
+        assert "slenderness=6.2" in results["geometry"]
+        assert "candidate-9" in results["evaluation"]
+        assert "resistance=3.14" in results["evaluation"]
+        assert "runtime=7 h" in results["execution"]
+        assert "processed=4" in results["execution"]
+        assert "best=candidate-9" in results["optimization"]
+        assert "ranked=4" in results["optimization"]
+        assert "spread=0.8" in results["optimization"]
+        assert "candidate-7" in results["candidates"]
+        assert len(results["candidate_rows"]) == 2
+    finally:
+        window.close()
+        app.processEvents()
