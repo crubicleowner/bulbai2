@@ -23,5 +23,19 @@
     <p>Beam extent: {{ best_candidate.geometry_metrics.beam_extent_m }}</p>
     <p>Draft extent: {{ best_candidate.geometry_metrics.draft_extent_m }}</p>
     {% endif %}
+    {% if ranked_candidates %}
+    <h2>Candidate Comparison</h2>
+    <ul>
+      {% for candidate in ranked_candidates %}
+      <li>
+        {{ candidate.candidate_id }} |
+        fast={{ candidate.fast_score }} |
+        mid={{ candidate.mid_score }} |
+        resistance={{ candidate.score_components.resistance_proxy }} |
+        slenderness={{ candidate.geometry_metrics.slenderness_ratio }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
   </body>
 </html>

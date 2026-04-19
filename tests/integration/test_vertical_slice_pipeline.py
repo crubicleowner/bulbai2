@@ -50,6 +50,10 @@ def test_bootstrap_application_runs_vertical_slice_and_writes_report(
     assert "Resistance proxy" in report_html
     assert "Slenderness ratio" in report_html
     assert summary.best_candidate_id in report_html
+    assert "Candidate Comparison" in report_html
+    assert "candidate-1" in report_html
+    assert "candidate-2" in report_html
+    assert "candidate-3" in report_html
 
 
 def test_repository_create_case_rolls_back_when_initial_write_fails(tmp_path: Path) -> None:
