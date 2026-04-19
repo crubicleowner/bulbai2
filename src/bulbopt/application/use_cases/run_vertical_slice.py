@@ -47,6 +47,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 ),
                 "runtime_budget_hours": command.runtime_budget_hours,
                 "candidate_count": command.candidate_count,
+                "processed_candidates": len(evaluated_candidates),
                 "openfoam_available": False,
                 "high_fidelity_used": False,
             },

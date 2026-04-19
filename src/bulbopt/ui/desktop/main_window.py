@@ -21,6 +21,7 @@ class MainWindow(QMainWindow):
         self._artifacts_label: QLabel | None = None
         self._geometry_summary_label: QLabel | None = None
         self._evaluation_summary_label: QLabel | None = None
+        self._execution_summary_label: QLabel | None = None
         self._candidates_summary_label: QLabel | None = None
         self._candidates_list_widget: QListWidget | None = None
         self._open_case_button: QPushButton | None = None
@@ -60,6 +61,11 @@ class MainWindow(QMainWindow):
             central_widget,
         )
         self._evaluation_summary_label.setObjectName("evaluation_summary_label")
+        self._execution_summary_label = QLabel(
+            "Execution summary: not available",
+            central_widget,
+        )
+        self._execution_summary_label.setObjectName("execution_summary_label")
         self._candidates_summary_label = QLabel(
             "Candidates summary: not available",
             central_widget,
@@ -85,6 +91,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._artifacts_label)
         layout.addWidget(self._geometry_summary_label)
         layout.addWidget(self._evaluation_summary_label)
+        layout.addWidget(self._execution_summary_label)
         layout.addWidget(self._candidates_summary_label)
         layout.addWidget(self._candidates_list_widget)
         layout.addWidget(self._open_case_button)
@@ -100,6 +107,7 @@ class MainWindow(QMainWindow):
             or self._artifacts_label is None
             or self._geometry_summary_label is None
             or self._evaluation_summary_label is None
+            or self._execution_summary_label is None
             or self._candidates_summary_label is None
             or self._candidates_list_widget is None
             or self._open_case_button is None
@@ -115,6 +123,7 @@ class MainWindow(QMainWindow):
         self._open_report_button.setEnabled(False)
         self._geometry_summary_label.setText("Geometry summary: not available")
         self._evaluation_summary_label.setText("Evaluation summary: not available")
+        self._execution_summary_label.setText("Execution summary: not available")
         self._candidates_summary_label.setText("Candidates summary: not available")
         self._candidates_list_widget.clear()
 
@@ -138,6 +147,7 @@ class MainWindow(QMainWindow):
         results_payload = self._load_case_results(self._last_case_dir, summary.best_candidate_id)
         self._geometry_summary_label.setText(results_payload["geometry"])
         self._evaluation_summary_label.setText(results_payload["evaluation"])
+        self._execution_summary_label.setText(results_payload["execution"])
         self._candidates_summary_label.setText(results_payload["candidates"])
         self._candidates_list_widget.addItems(results_payload["candidate_rows"])
         self._open_case_button.setEnabled(True)
@@ -157,11 +167,13 @@ class MainWindow(QMainWindow):
     def _load_case_results(self, case_dir: Path, best_candidate_id: str | None) -> dict[str, str]:
         geometry_summary = "Geometry summary: not available"
         evaluation_summary = "Evaluation summary: not available"
+        execution_summary = "Execution summary: not available"
         candidates_summary = "Candidates summary: not available"
         candidate_rows: list[str] = []
 
         geometry_path = case_dir / "working" / "repaired" / "geometry_analysis.json"
         evaluation_path = case_dir / "evaluation_index.json"
+        metadata_path = case_dir / "metadata.json"
 
         if geometry_path.exists():
             geometry_payload = self._json_store.read(geometry_path)
@@ -211,9 +223,23 @@ class MainWindow(QMainWindow):
                     f"resistance={score_components.get('resistance_proxy', 'n/a')}"
                 )
 
+        if metadata_path.exists():
+            metadata_payload = self._json_store.read(metadata_path)
+            command_payload = metadata_payload.get("create_case_command", {})
+            runtime_budget = command_payload.get("runtime_budget_hours", "n/a")
+            candidate_count = command_payload.get("candidate_count", "n/a")
+            processed_count = len(candidate_rows)
+            execution_summary = (
+                "Execution summary: "
+                f"runtime={runtime_budget} h "
+                f"candidates={candidate_count} "
+                f"processed={processed_count}"
+            )
+
         return {
             "geometry": geometry_summary,
             "evaluation": evaluation_summary,
+            "execution": execution_summary,
             "candidates": candidates_summary,
             "candidate_rows": candidate_rows,
         }
