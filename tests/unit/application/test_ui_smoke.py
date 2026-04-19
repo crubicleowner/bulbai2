@@ -135,8 +135,8 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
             window,
             "_load_case_results",
             lambda case_dir, best_candidate_id: {
-                "geometry": "Geometry summary: V=120 F=240 watertight=no axis=0",
-                "evaluation": "Evaluation summary: cand-1 fast=1.0 mid=9.0",
+                "geometry": "Geometry summary: V=120 F=240 watertight=no axis=0 slenderness=7.5",
+                "evaluation": "Evaluation summary: cand-1 fast=1.0 mid=9.0 resistance=4.08",
             },
         )
 
@@ -169,7 +169,9 @@ def test_main_window_runs_vertical_slice_from_button(tmp_path: Path, monkeypatch
         assert "case-001" in artifacts_label.text()
         assert "report.html" in artifacts_label.text()
         assert "V=120" in geometry_summary.text()
+        assert "slenderness=7.5" in geometry_summary.text()
         assert "cand-1" in evaluation_summary.text()
+        assert "resistance=4.08" in evaluation_summary.text()
         assert open_case_button.isEnabled() is True
         assert open_report_button.isEnabled() is True
     finally:
@@ -239,7 +241,11 @@ def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypat
         case_dir = tmp_path / "projects" / "case-777"
         (case_dir / "working" / "repaired").mkdir(parents=True)
         (case_dir / "evaluation_index.json").write_text(
-            '[{"candidate_id":"candidate-3","fast_score":0.333,"mid_score":7.0}]',
+            (
+                '[{"candidate_id":"candidate-3","fast_score":0.333,"mid_score":7.0,'
+                '"geometry_metrics":{"slenderness_ratio":7.6},'
+                '"score_components":{"resistance_proxy":0.244}}]'
+            ),
             encoding="utf-8",
         )
         (case_dir / "working" / "repaired" / "geometry_analysis.json").write_text(
@@ -254,8 +260,10 @@ def test_main_window_loads_case_results_from_artifacts(tmp_path: Path, monkeypat
 
         assert "14638" in results["geometry"]
         assert "29272" in results["geometry"]
+        assert "7.6" in results["geometry"]
         assert "candidate-3" in results["evaluation"]
         assert "7.0" in results["evaluation"]
+        assert "0.244" in results["evaluation"]
     finally:
         window.close()
         app.processEvents()

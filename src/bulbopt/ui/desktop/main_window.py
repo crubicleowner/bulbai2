@@ -166,11 +166,18 @@ class MainWindow(QMainWindow):
                 evaluation_payload[0] if evaluation_payload else None,
             )
             if best_candidate is not None:
+                geometry_metrics = best_candidate.get("geometry_metrics", {})
+                score_components = best_candidate.get("score_components", {})
+                geometry_summary = (
+                    f"{geometry_summary} "
+                    f"slenderness={geometry_metrics.get('slenderness_ratio', 'n/a')}"
+                )
                 evaluation_summary = (
                     "Evaluation summary: "
                     f"{best_candidate.get('candidate_id', 'n/a')} "
                     f"fast={best_candidate.get('fast_score', 'n/a')} "
-                    f"mid={best_candidate.get('mid_score', 'n/a')}"
+                    f"mid={best_candidate.get('mid_score', 'n/a')} "
+                    f"resistance={score_components.get('resistance_proxy', 'n/a')}"
                 )
 
         return {

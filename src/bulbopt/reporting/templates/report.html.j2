@@ -11,5 +11,17 @@
     <p>Best candidate: {{ best_candidate_id }}</p>
     <p>OpenFOAM available: {{ openfoam_available }}</p>
     <p>High fidelity used: {{ high_fidelity_used }}</p>
+    {% if best_candidate %}
+    <h2>Best Candidate Metrics</h2>
+    <p>Fast score: {{ best_candidate.fast_score }}</p>
+    <p>Mid score: {{ best_candidate.mid_score }}</p>
+    <p>Resistance proxy: {{ best_candidate.score_components.resistance_proxy }}</p>
+    <p>Frontal area proxy: {{ best_candidate.score_components.frontal_area_proxy_m2 }}</p>
+    <p>Slenderness ratio: {{ best_candidate.geometry_metrics.slenderness_ratio }}</p>
+    <p>Surface area: {{ best_candidate.geometry_metrics.surface_area_m2 }}</p>
+    <p>Axial extent: {{ best_candidate.geometry_metrics.axial_extent_m }}</p>
+    <p>Beam extent: {{ best_candidate.geometry_metrics.beam_extent_m }}</p>
+    <p>Draft extent: {{ best_candidate.geometry_metrics.draft_extent_m }}</p>
+    {% endif %}
   </body>
 </html>

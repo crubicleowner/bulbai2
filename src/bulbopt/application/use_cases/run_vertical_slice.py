@@ -40,6 +40,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 "case_name": case.case_name,
                 "status": CaseStatus.COMPLETED.value,
                 "best_candidate_id": best_candidate["candidate_id"],
+                "best_candidate": best_candidate,
                 "openfoam_available": False,
                 "high_fidelity_used": False,
             },
