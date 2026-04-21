@@ -43,6 +43,8 @@ class OpenFOAMAdapter:
         shutil.copyfile(best_candidate_geometry_path, target_stl)
 
         (system_dir / "controlDict").write_text(self._control_dict(), encoding="utf-8")
+        (system_dir / "blockMeshDict").write_text(self._block_mesh_dict(), encoding="utf-8")
+        (system_dir / "snappyHexMeshDict").write_text(self._snappy_hex_mesh_dict(), encoding="utf-8")
         (system_dir / "fvSchemes").write_text(self._fv_schemes(), encoding="utf-8")
         (system_dir / "fvSolution").write_text(self._fv_solution(), encoding="utf-8")
         (constant_dir / "transportProperties").write_text(self._transport_properties(), encoding="utf-8")
@@ -56,6 +58,7 @@ class OpenFOAMAdapter:
             "best_candidate_id": best_candidate_id,
             "case_directory": str(openfoam_case_dir),
             "geometry_path": str(target_stl),
+            "mesh_templates": ["blockMeshDict", "snappyHexMeshDict"],
         }
         (openfoam_case_dir / "openfoam_case_manifest.json").write_text(
             json.dumps(manifest, indent=2),
@@ -91,6 +94,55 @@ class OpenFOAMAdapter:
             "ddtSchemes\n"
             "{\n"
             "    default         Euler;\n"
+            "}\n"
+        )
+
+    def _block_mesh_dict(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       dictionary;\n"
+            "    object      blockMeshDict;\n"
+            "}\n"
+            "convertToMeters 1.0;\n"
+            "vertices\n"
+            "(\n"
+            "    (-12 -6 -6)\n"
+            "    ( 24 -6 -6)\n"
+            "    ( 24  6 -6)\n"
+            "    (-12  6 -6)\n"
+            "    (-12 -6  6)\n"
+            "    ( 24 -6  6)\n"
+            "    ( 24  6  6)\n"
+            "    (-12  6  6)\n"
+            ");\n"
+            "blocks\n"
+            "(\n"
+            "    hex (0 1 2 3 4 5 6 7) (40 20 20) simpleGrading (1 1 1)\n"
+            ");\n"
+        )
+
+    def _snappy_hex_mesh_dict(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       dictionary;\n"
+            "    object      snappyHexMeshDict;\n"
+            "}\n"
+            "castellatedMesh true;\n"
+            "snap            true;\n"
+            "addLayers       false;\n"
+            "geometry\n"
+            "{\n"
+            "    best_candidate.stl\n"
+            "    {\n"
+            "        type triSurfaceMesh;\n"
+            "        name hull;\n"
+            "    }\n"
             "}\n"
         )
 

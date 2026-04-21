@@ -64,6 +64,13 @@ class StubEvaluationAdapter:
                 condition_weights=weights,
             )
             score_components["multi_condition_penalty"] = multi_condition_objective["combined_penalty"]
+            selection_priority = self._build_selection_priority(
+                calm_water_metrics,
+                hydrostatics_metrics,
+                wave_response_metrics,
+                multi_condition_objective,
+            )
+            score_components["selection_priority_score"] = selection_priority["selection_priority_score"]
             acceptability = self._build_acceptability_summary(
                 hydrostatics_metrics,
                 calm_water_metrics,
@@ -97,6 +104,7 @@ class StubEvaluationAdapter:
                     "calm_water_metrics": calm_water_metrics,
                     "wave_response_metrics": wave_response_metrics,
                     "multi_condition_objective": multi_condition_objective,
+                    "selection_priority": selection_priority,
                     "acceptability": acceptability,
                     "score_components": score_components,
                 }
@@ -673,6 +681,40 @@ class StubEvaluationAdapter:
             "dominant_condition": dominant_condition,
             "calm_water_weight": round(normalized_calm, 6),
             "wave_response_weight": round(normalized_wave, 6),
+        }
+
+    def _build_selection_priority(
+        self,
+        calm_water_metrics: dict[str, float | list[dict[str, float]]],
+        hydrostatics_metrics: dict[str, float | list[str] | str],
+        wave_response_metrics: dict[str, float | str],
+        multi_condition_objective: dict[str, float | str],
+    ) -> dict[str, float | str]:
+        aggregate_effective_power = float(calm_water_metrics.get("aggregate_effective_power_proxy_kw", 0.0))
+        hydro_penalty = float(hydrostatics_metrics.get("hydrostatic_penalty", 0.0))
+        wave_penalty = float(wave_response_metrics.get("wave_penalty", 0.0))
+        combined_penalty = float(multi_condition_objective.get("combined_penalty", 0.0))
+        score = round(
+            (aggregate_effective_power / 1000.0)
+            + (0.35 * hydro_penalty)
+            + (0.18 * wave_penalty)
+            + (0.02 * combined_penalty),
+            6,
+        )
+        if score <= 6.0:
+            focus_band = "promote"
+        elif score <= 12.0:
+            focus_band = "review"
+        else:
+            focus_band = "screen"
+        return {
+            "calibration_model": "multi_condition_v1",
+            "selection_priority_score": score,
+            "cfd_focus_band": focus_band,
+            "aggregate_effective_power_proxy_kw": round(aggregate_effective_power, 6),
+            "hydrostatic_penalty": round(hydro_penalty, 6),
+            "wave_penalty": round(wave_penalty, 6),
+            "combined_penalty": round(combined_penalty, 6),
         }
 
     def _mesh_volume_proxy(self, mesh: trimesh.Trimesh) -> float:

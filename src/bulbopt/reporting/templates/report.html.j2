@@ -125,6 +125,12 @@
     <p>Calm-water weight: {{ multi_condition_summary.calm_water_weight }}</p>
     <p>Wave-response weight: {{ multi_condition_summary.wave_response_weight }}</p>
     {% endif %}
+    {% if selection_priority_summary %}
+    <h2>Selection priority</h2>
+    <p>Calibration model: {{ selection_priority_summary.calibration_model }}</p>
+    <p>Selection priority score: {{ selection_priority_summary.selection_priority_score }}</p>
+    <p>CFD focus band: {{ selection_priority_summary.cfd_focus_band }}</p>
+    {% endif %}
     {% if baseline_summary %}
     <h2>Baseline comparison</h2>
     <p>Reference vs candidate: {{ baseline_summary.reference_vs_candidate }}</p>
@@ -141,6 +147,9 @@
     <p>Used: {{ high_fidelity_boundary.used }}</p>
     <p>Mode: {{ high_fidelity_boundary.mode }}</p>
     <p>Case built: {{ high_fidelity_boundary.case_built }}</p>
+    <p>Mesh templates: {{ high_fidelity_boundary.mesh_templates|join(", ") }}</p>
+    <p>Runner status: {{ high_fidelity_boundary.runner_status }}</p>
+    <p>Runner reason: {{ high_fidelity_boundary.runner_reason }}</p>
     <p>OpenFOAM case directory: {{ high_fidelity_boundary.case_directory }}</p>
     {% endif %}
     {% if best_candidate.acceptability %}

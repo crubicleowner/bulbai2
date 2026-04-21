@@ -89,6 +89,16 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert case_payload["summary_metrics"]["high_fidelity_boundary"]["used"] is False
     assert case_payload["summary_metrics"]["high_fidelity_boundary"]["case_built"] is True
     assert case_payload["summary_metrics"]["high_fidelity_boundary"]["case_directory"].endswith("working\\openfoam_case")
+    assert case_payload["summary_metrics"]["high_fidelity_boundary"]["mesh_templates"] == [
+        "blockMeshDict",
+        "snappyHexMeshDict",
+    ]
+    assert case_payload["summary_metrics"]["high_fidelity_boundary"]["runner_status"] == "skipped"
+    assert case_payload["summary_metrics"]["high_fidelity_boundary"]["runner_reason"] == "openfoam_unavailable"
+    assert case_payload["summary_metrics"]["high_fidelity_boundary"]["runner_recoverable"] is True
+    assert case_payload["summary_metrics"]["selection_priority"]["calibration_model"] == "multi_condition_v1"
+    assert case_payload["summary_metrics"]["selection_priority"]["selection_priority_score"] > 0.0
+    assert case_payload["summary_metrics"]["selection_priority"]["cfd_focus_band"] in {"screen", "review", "promote"}
     assert metadata_payload["create_case_command"]["candidate_count"] == 3
     assert metadata_payload["create_case_command"]["speed_knots"] == [18.0, 20.0]
     assert metadata_payload["create_case_command"]["operational_profile_weights"] is None
@@ -196,6 +206,8 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert "High-fidelity boundary" in report_html
     assert "OpenFOAM case directory" in report_html
     assert "Surrogate model" in report_html
+    assert "Selection priority" in report_html
+    assert "Runner status" in report_html
     assert "vs" in case_payload["summary_metrics"]["optimization_trace"]["rows"][0]
     assert "hydro=" in case_payload["summary_metrics"]["optimization_trace"]["rows"][0]
     assert "wave=" in case_payload["summary_metrics"]["optimization_trace"]["rows"][0]

@@ -59,7 +59,10 @@ def test_bootstrap_application_runs_vertical_slice_and_writes_report(
     assert "candidate-3" in report_html
     assert openfoam_case_dir.exists()
     assert (openfoam_case_dir / "system" / "controlDict").exists()
+    assert (openfoam_case_dir / "system" / "blockMeshDict").exists()
+    assert (openfoam_case_dir / "system" / "snappyHexMeshDict").exists()
     assert (openfoam_case_dir / "constant" / "triSurface" / "best_candidate.stl").exists()
+    assert (openfoam_case_dir / "openfoam_run_manifest.json").exists()
     assert openfoam_manifest["adapter"] == "openfoam"
     assert openfoam_manifest["case_built"] is True
     assert openfoam_manifest["best_candidate_id"] == summary.best_candidate_id

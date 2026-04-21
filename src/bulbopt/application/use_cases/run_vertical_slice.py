@@ -7,6 +7,7 @@ from bulbopt.application.use_cases.create_case import create_case
 from bulbopt.domain.core.models import CaseStatus
 from bulbopt.infrastructure.adapters.html_report import HtmlReportAdapter
 from bulbopt.infrastructure.adapters.openfoam_adapter import OpenFOAMAdapter
+from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
 from bulbopt.infrastructure.adapters.stub_evaluation import StubEvaluationAdapter
 from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
 from bulbopt.infrastructure.adapters.stub_optimization import StubOptimizationAdapter
@@ -24,6 +25,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
     evaluation = StubEvaluationAdapter()
     optimization = StubOptimizationAdapter()
     openfoam = OpenFOAMAdapter()
+    openfoam_runner = OpenFOAMRunnerAdapter()
     report = HtmlReportAdapter(template_root=_template_root())
 
     try:
@@ -72,6 +74,11 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
             best_candidate_id=best_candidate["candidate_id"],
             best_candidate_geometry_path=Path(best_candidate["geometry_path"]),
         )
+        runner_summary = openfoam_runner.run_case(
+            case_dir / "working" / "openfoam_case",
+            case_manifest=high_fidelity_boundary,
+        )
+        high_fidelity_boundary.update(runner_summary)
         optimization_summary_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
         json_store.write(optimization_summary_path, optimization_summary)
         artifacts_index_path = case_dir / "artifacts_index.json"
@@ -79,6 +86,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
         artifacts_index["optimization_summary"] = str(optimization_summary_path)
         artifacts_index["best_candidate_stl"] = str(best_candidate["geometry_path"])
         artifacts_index["openfoam_case_manifest"] = str(case_dir / "working" / "openfoam_case" / "openfoam_case_manifest.json")
+        artifacts_index["openfoam_run_manifest"] = str(case_dir / "working" / "openfoam_case" / "openfoam_run_manifest.json")
         json_store.write(artifacts_index_path, artifacts_index)
         case.summary_metrics = _build_case_summary_metrics(
             geometry_analysis=geometry_analysis,
@@ -114,6 +122,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 "wave_response_summary": best_candidate.get("wave_response_metrics", {}),
                 "baseline_summary": case.summary_metrics.get("baseline", {}),
                 "multi_condition_summary": case.summary_metrics.get("multi_condition_objective", {}),
+                "selection_priority_summary": case.summary_metrics.get("selection_priority", {}),
                 "high_fidelity_boundary": case.summary_metrics.get("high_fidelity_boundary", {}),
                 "openfoam_available": case.summary_metrics.get("high_fidelity_boundary", {}).get("available", False),
                 "high_fidelity_used": case.summary_metrics.get("high_fidelity_boundary", {}).get("used", False),
@@ -165,6 +174,7 @@ def _build_case_summary_metrics(
     calm_water_metrics = best_candidate.get("calm_water_metrics", {})
     wave_response_metrics = best_candidate.get("wave_response_metrics", {})
     multi_condition_objective = best_candidate.get("multi_condition_objective", {})
+    selection_priority = best_candidate.get("selection_priority", {})
     acceptability = _normalized_acceptability(best_candidate)
     score_components = best_candidate.get("score_components", {})
     candidate_rows = [
@@ -278,6 +288,15 @@ def _build_case_summary_metrics(
             "dominant_condition": multi_condition_objective.get("dominant_condition"),
             "calm_water_weight": multi_condition_objective.get("calm_water_weight"),
             "wave_response_weight": multi_condition_objective.get("wave_response_weight"),
+        },
+        "selection_priority": {
+            "calibration_model": selection_priority.get("calibration_model"),
+            "selection_priority_score": selection_priority.get("selection_priority_score"),
+            "cfd_focus_band": selection_priority.get("cfd_focus_band"),
+            "aggregate_effective_power_proxy_kw": selection_priority.get("aggregate_effective_power_proxy_kw"),
+            "hydrostatic_penalty": selection_priority.get("hydrostatic_penalty"),
+            "wave_penalty": selection_priority.get("wave_penalty"),
+            "combined_penalty": selection_priority.get("combined_penalty"),
         },
         "baseline": {
             "reference_aggregate_resistance_proxy": calm_water_metrics.get("reference_aggregate_resistance_proxy"),

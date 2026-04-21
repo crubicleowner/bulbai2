@@ -82,7 +82,9 @@ class StubOptimizationAdapter:
             f"calm={current_components.get('calm_water_penalty', 'n/a')} vs "
             f"{following_components.get('calm_water_penalty', 'n/a')}, "
             f"wave={current_components.get('wave_penalty', 'n/a')} vs "
-            f"{following_components.get('wave_penalty', 'n/a')}"
+            f"{following_components.get('wave_penalty', 'n/a')}, "
+            f"priority={current.get('selection_priority', {}).get('selection_priority_score', 'n/a')} vs "
+            f"{following.get('selection_priority', {}).get('selection_priority_score', 'n/a')}"
         )
 
     def _acceptability_priority(self, acceptability: dict) -> int:
