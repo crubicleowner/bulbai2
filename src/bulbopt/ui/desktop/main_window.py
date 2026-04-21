@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self._open_best_candidate_button: QPushButton | None = None
         self._case_history_summary_label: QLabel | None = None
         self._case_history_list_widget: QListWidget | None = None
+        self._resume_case_button: QPushButton | None = None
         self._last_case_dir: Path | None = None
         self._last_report_path: Path | None = None
         self._last_best_candidate_path: Path | None = None
@@ -195,6 +196,11 @@ class MainWindow(QMainWindow):
         self._case_history_summary_label.setObjectName("case_history_summary_label")
         self._case_history_list_widget = QListWidget(central_widget)
         self._case_history_list_widget.setObjectName("case_history_list_widget")
+        self._case_history_list_widget.currentItemChanged.connect(lambda *_: self._update_resume_button_state())
+        self._resume_case_button = QPushButton("Resume Selected Case", central_widget)
+        self._resume_case_button.setObjectName("resume_case_button")
+        self._resume_case_button.setEnabled(False)
+        self._resume_case_button.clicked.connect(self._resume_selected_case)
         self._open_case_button = QPushButton("Open Case Folder", central_widget)
         self._open_case_button.setObjectName("open_case_button")
         self._open_case_button.setEnabled(False)
@@ -240,6 +246,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._optimization_trace_list_widget)
         layout.addWidget(self._case_history_summary_label)
         layout.addWidget(self._case_history_list_widget)
+        layout.addWidget(self._resume_case_button)
         layout.addWidget(self._open_case_button)
         layout.addWidget(self._open_report_button)
         layout.addWidget(self._open_best_candidate_button)
@@ -390,6 +397,7 @@ class MainWindow(QMainWindow):
         self._case_history_list_widget.clear()
         if not summaries:
             self._case_history_summary_label.setText("Previous cases: none yet")
+            self._update_resume_button_state()
             return
 
         recoverable_count = sum(1 for summary in summaries if summary.get("is_recoverable"))
@@ -398,12 +406,72 @@ class MainWindow(QMainWindow):
         )
         for summary in summaries:
             recoverable_flag = " (recoverable)" if summary.get("is_recoverable") else ""
-            self._case_history_list_widget.addItem(
+            from PySide6.QtWidgets import QListWidgetItem
+            from PySide6.QtCore import Qt
+
+            item = QListWidgetItem(
                 f"{summary.get('case_id', 'n/a')} | "
                 f"{summary.get('case_name', 'n/a')} | "
                 f"status={summary.get('status', 'n/a')}{recoverable_flag} | "
                 f"updated={summary.get('updated_at', 'n/a')}"
             )
+            # Store case metadata on the item so Resume can look it up without reparsing text.
+            item.setData(Qt.UserRole, dict(summary))
+            self._case_history_list_widget.addItem(item)
+
+        self._update_resume_button_state()
+
+    def _update_resume_button_state(self) -> None:
+        if self._resume_case_button is None or self._case_history_list_widget is None:
+            return
+        current_item = self._case_history_list_widget.currentItem()
+        if current_item is None:
+            self._resume_case_button.setEnabled(False)
+            return
+        from PySide6.QtCore import Qt
+
+        summary = current_item.data(Qt.UserRole) or {}
+        self._resume_case_button.setEnabled(bool(summary.get("is_recoverable")))
+
+    def _resume_selected_case(self) -> None:
+        if (
+            self._case_history_list_widget is None
+            or self._run_status_label is None
+            or self._resume_case_button is None
+        ):
+            return
+        resume = self.services.get("resume_vertical_slice")
+        if not callable(resume):
+            return
+        current_item = self._case_history_list_widget.currentItem()
+        if current_item is None:
+            return
+        from PySide6.QtCore import Qt
+
+        summary_payload = current_item.data(Qt.UserRole) or {}
+        case_id = summary_payload.get("case_id")
+        if not case_id:
+            return
+        self._run_status_label.setText(f"Resuming {case_id}...")
+        try:
+            summary = resume(case_id)
+        except Exception as error:
+            self._run_status_label.setText(f"Resume failed: {error}")
+            self._refresh_case_history()
+            return
+
+        project_root = self.services["settings"].project_root
+        self._last_case_dir = project_root / summary.case_id
+        self._last_report_path = self._last_case_dir / "outputs" / "reports" / "report.html"
+        status_label = summary.status if summary.status else "Resumed"
+        self._run_status_label.setText(
+            f"Resume {status_label}: {summary.case_id} | best {summary.best_candidate_id or 'n/a'}"
+        )
+        if self._open_case_button is not None:
+            self._open_case_button.setEnabled(True)
+        if self._open_report_button is not None:
+            self._open_report_button.setEnabled(True)
+        self._refresh_case_history()
 
     def _open_case_dir(self) -> None:
         if self._last_case_dir is not None:

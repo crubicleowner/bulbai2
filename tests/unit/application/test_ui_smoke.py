@@ -613,6 +613,103 @@ def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, mon
         app.processEvents()
 
 
+def test_main_window_resume_button_enabled_only_for_recoverable_cases(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Spec §10: the desktop should visibly offer continuation, and only for
+    cases that actually declare ``is_recoverable=True``.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    history_summaries = [
+        {
+            "case_id": "case-completed",
+            "case_name": "done",
+            "status": "completed",
+            "is_recoverable": False,
+            "updated_at": "2026-04-18T09:00:00+00:00",
+        },
+        {
+            "case_id": "case-failed",
+            "case_name": "failed-run",
+            "status": "failed",
+            "is_recoverable": True,
+            "updated_at": "2026-04-18T10:00:00+00:00",
+        },
+    ]
+    resume_calls: list[str] = []
+
+    def fake_resume(case_id: str):
+        resume_calls.append(case_id)
+        # Re-mark the case as recovered so history can update.
+        for summary in history_summaries:
+            if summary["case_id"] == case_id:
+                summary["status"] = "completed"
+                summary["is_recoverable"] = False
+        return CaseSummary(
+            case_id=case_id,
+            case_name="failed-run",
+            status="completed",
+            best_candidate_id="cand-1",
+        )
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": lambda **kwargs: CaseSummary(
+                case_id="case-unused",
+                case_name=str(kwargs["case_name"]),
+                status="completed",
+                best_candidate_id="cand-new",
+            ),
+            "resume_vertical_slice": fake_resume,
+            "list_cases": lambda: list(history_summaries),
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+    try:
+        central_widget = window.centralWidget()
+        assert central_widget is not None
+
+        resume_button = central_widget.findChild(QPushButton, "resume_case_button")
+        history_list = central_widget.findChild(QListWidget, "case_history_list_widget")
+
+        assert resume_button is not None
+        assert history_list is not None
+        assert history_list.count() == 2
+        # With nothing selected, resume must be disabled.
+        assert resume_button.isEnabled() is False
+
+        # Select the completed case: Resume stays disabled.
+        completed_row = next(
+            i for i in range(history_list.count()) if "case-completed" in history_list.item(i).text()
+        )
+        history_list.setCurrentRow(completed_row)
+        app.processEvents()
+        assert resume_button.isEnabled() is False
+
+        # Select the recoverable case: Resume is enabled.
+        failed_row = next(
+            i for i in range(history_list.count()) if "case-failed" in history_list.item(i).text()
+        )
+        history_list.setCurrentRow(failed_row)
+        app.processEvents()
+        assert resume_button.isEnabled() is True
+
+        (tmp_path / "projects" / "case-failed").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "projects" / "case-failed" / "artifacts_index.json").write_text("{}", encoding="utf-8")
+        resume_button.click()
+        app.processEvents()
+
+        assert resume_calls == ["case-failed"]
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_surfaces_case_history_panel(tmp_path: Path, monkeypatch) -> None:
     """Spec §10 requires the desktop to surface existing cases so engineers can
     pick one for continuation. This smoke test verifies the panel is rendered,
