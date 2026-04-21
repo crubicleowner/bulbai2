@@ -4,6 +4,57 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
+
+
+def _shorten_path(path: str) -> str:
+    """Return Windows 8.3 short path when available (fixes non-ASCII paths that
+    break MinGW dynamic linker lookups). On non-Windows or when conversion
+    fails, returns the input unchanged.
+    """
+    if sys.platform != "win32":
+        return path
+    try:
+        import ctypes
+
+        get_short = ctypes.windll.kernel32.GetShortPathNameW  # type: ignore[attr-defined]
+        get_short.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        get_short.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        written = get_short(str(path), buffer, len(buffer))
+        if written and buffer.value:
+            return buffer.value
+    except Exception:
+        pass
+    return str(path)
+
+
+def _configured_bin_dir() -> str | None:
+    """Return the explicit OpenFOAM bin directory, if one is configured.
+
+    Checked in order:
+      1. ``BULBOPT_OPENFOAM_BIN`` (preferred, explicit)
+      2. ``FOAM_APPBIN`` (set by the official OpenFOAM env scripts)
+      3. ``WM_PROJECT_DIR`` joined with the platform-specific bin suffix
+    """
+    explicit = os.environ.get("BULBOPT_OPENFOAM_BIN")
+    if explicit and Path(explicit).exists():
+        return explicit
+
+    foam_appbin = os.environ.get("FOAM_APPBIN")
+    if foam_appbin and Path(foam_appbin).exists():
+        return foam_appbin
+
+    project_dir = os.environ.get("WM_PROJECT_DIR")
+    if project_dir:
+        for candidate_suffix in (
+            Path("platforms") / "win64MingwDPInt32Opt" / "bin",
+            Path("platforms") / "linux64GccDPInt32Opt" / "bin",
+        ):
+            candidate = Path(project_dir) / candidate_suffix
+            if candidate.exists():
+                return str(candidate)
+    return None
 
 
 class OpenFOAMAdapter:
@@ -13,6 +64,8 @@ class OpenFOAMAdapter:
 
     def is_available(self) -> bool:
         if os.environ.get("WM_PROJECT"):
+            return True
+        if _configured_bin_dir():
             return True
         return any(shutil.which(executable) for executable in self.EXECUTABLE_CANDIDATES)
 

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
-from bulbopt.infrastructure.adapters.openfoam_adapter import OpenFOAMAdapter
+from bulbopt.infrastructure.adapters.openfoam_adapter import (
+    OpenFOAMAdapter,
+    _configured_bin_dir,
+    _shorten_path,
+)
 
 
 class OpenFOAMRunnerAdapter:
@@ -80,11 +85,23 @@ class OpenFOAMRunnerAdapter:
         overall_returncode = 0
         failing_step: str | None = None
 
+        # Build subprocess env with the configured OpenFOAM bin directory
+        # prepended to PATH. On Windows with non-ASCII install paths, switch
+        # both cwd and bin_dir to their 8.3 short form so the MinGW dynamic
+        # linker resolves the DLL dependencies.
+        subprocess_env = os.environ.copy()
+        bin_dir = _configured_bin_dir()
+        if bin_dir:
+            short_bin = _shorten_path(bin_dir)
+            subprocess_env["PATH"] = short_bin + os.pathsep + subprocess_env.get("PATH", "")
+        subprocess_cwd = _shorten_path(str(openfoam_case_dir))
+
         for command in self.DEFAULT_SOLVER_CHAIN:
             try:
                 completed = subprocess.run(
                     command,
-                    cwd=str(openfoam_case_dir),
+                    cwd=subprocess_cwd,
+                    env=subprocess_env,
                     capture_output=True,
                     text=True,
                     timeout=timeout_seconds,

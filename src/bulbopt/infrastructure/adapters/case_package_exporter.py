@@ -24,7 +24,10 @@ class CasePackageExporter:
         "working/candidates",
         "working/evaluation",
         "working/openfoam_case",
-        "outputs",
+        "outputs/reports",
+        "outputs/geometry",
+        "outputs/plots",
+        "outputs/tables",
         "logs",
     )
     ROOT_FILES: tuple[str, ...] = (
