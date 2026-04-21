@@ -2,6 +2,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from bulbopt.app.bootstrap import bootstrap_application
 from bulbopt.app.main import build_cli_banner, default_project_root, dispatch_main
 
 
@@ -71,3 +72,11 @@ def test_default_project_root_falls_back_to_home_directory(monkeypatch) -> None:
     monkeypatch.setattr("bulbopt.app.main.Path.home", lambda: Path("/tmp/test-home"))
 
     assert default_project_root() == Path("/tmp/test-home") / ".bulbopt" / "projects"
+
+
+def test_bootstrap_application_detects_openfoam_boundary(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("bulbopt.app.bootstrap.detect_openfoam_available", lambda: True)
+
+    services = bootstrap_application(project_root=tmp_path / "projects")
+
+    assert services["settings"].openfoam_available is True

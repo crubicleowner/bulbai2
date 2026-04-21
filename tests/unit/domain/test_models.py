@@ -21,6 +21,22 @@ def test_create_case_command_defaults_to_stl_first_mode() -> None:
     assert command.axial_gain_weight == 0.8
     assert command.draft_reduction_weight == 0.1
     assert command.beam_growth_weight == 0.05
+    assert command.operational_profile_weights is None
+    assert command.wave_height_m == 0.0
+    assert command.wave_period_s == 0.0
+    assert command.wave_scenario_heights_m is None
+    assert command.wave_scenario_periods_s is None
+    assert command.wave_scenario_weights is None
+    assert command.calm_water_condition_weight == 0.7
+    assert command.wave_condition_weight == 0.3
+    assert command.max_volume_delta_pct == 4.5
+    assert command.max_draft_delta_m == 0.05
+    assert command.max_speed_balance_ratio == 4.0
+    assert command.max_wave_penalty == 1.5
+    assert command.reject_volume_delta_pct == 9.0
+    assert command.reject_draft_delta_m == 0.1
+    assert command.reject_speed_balance_ratio == 8.0
+    assert command.reject_wave_penalty == 3.0
 
 
 def test_optimization_case_starts_in_draft_status() -> None:

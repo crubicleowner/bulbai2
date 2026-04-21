@@ -18,6 +18,26 @@
     <p>Axial gain weight: {{ objective_weights.axial_gain_weight }}</p>
     <p>Draft reduction weight: {{ objective_weights.draft_reduction_weight }}</p>
     <p>Beam growth weight: {{ objective_weights.beam_growth_weight }}</p>
+    <p>Calm-water condition weight: {{ objective_weights.calm_water_condition_weight }}</p>
+    <p>Wave condition weight: {{ objective_weights.wave_condition_weight }}</p>
+    {% endif %}
+    {% if acceptability_thresholds %}
+    <h2>Acceptability thresholds</h2>
+    <p>Max volume delta: {{ acceptability_thresholds.max_volume_delta_pct }}</p>
+    <p>Max draft delta: {{ acceptability_thresholds.max_draft_delta_m }}</p>
+    <p>Max speed balance: {{ acceptability_thresholds.max_speed_balance_ratio }}</p>
+    <p>Warn wave penalty: {{ acceptability_thresholds.max_wave_penalty }}</p>
+    <p>Reject volume delta: {{ acceptability_thresholds.reject_volume_delta_pct }}</p>
+    <p>Reject draft delta: {{ acceptability_thresholds.reject_draft_delta_m }}</p>
+    <p>Reject speed balance: {{ acceptability_thresholds.reject_speed_balance_ratio }}</p>
+    <p>Reject wave penalty: {{ acceptability_thresholds.reject_wave_penalty }}</p>
+    {% endif %}
+    {% if operational_profile_summary %}
+    <h2>Operational profile</h2>
+    <p>Profile source: {{ operational_profile_summary.profile_source }}</p>
+    <p>Dominant speed: {{ operational_profile_summary.dominant_speed_knots }}</p>
+    <p>Speeds: {{ operational_profile_summary.speed_knots|join(", ") }}</p>
+    <p>Weights: {{ operational_profile_summary.operational_profile_weights|join(", ") }}</p>
     {% endif %}
     <p>OpenFOAM available: {{ openfoam_available }}</p>
     <p>High fidelity used: {{ high_fidelity_used }}</p>
@@ -25,6 +45,11 @@
     <h2>Optimization summary</h2>
     <p>Best candidate: {{ optimization_summary.best_candidate_id }}</p>
     <p>Ranked candidates: {{ optimization_summary.ranked_count }}</p>
+    <p>Acceptable candidates: {{ optimization_summary.acceptable_count }}</p>
+    <p>Unacceptable candidates: {{ optimization_summary.unacceptable_count }}</p>
+    <p>OK candidates: {{ optimization_summary.ok_count }}</p>
+    <p>Warn candidates: {{ optimization_summary.warn_count }}</p>
+    <p>Reject candidates: {{ optimization_summary.reject_count }}</p>
     <p>Best mid score: {{ optimization_summary.best_mid_score }}</p>
     <p>Worst mid score: {{ optimization_summary.worst_mid_score }}</p>
     <p>Mid-score spread: {{ optimization_summary.mid_score_spread }}</p>
@@ -48,6 +73,88 @@
     <p>Hydrostatic penalty: {{ best_candidate.score_components.hydrostatic_penalty }}</p>
     <p>Constraint status: {{ best_candidate.hydrostatics_metrics.constraint_status }}</p>
     {% endif %}
+    {% if calm_water_summary %}
+    <h2>Calm-water surrogate</h2>
+    <p>Speed count: {{ calm_water_summary.speed_count }}</p>
+    <p>Mean resistance proxy: {{ calm_water_summary.mean_resistance_proxy }}</p>
+    <p>Mean power proxy: {{ calm_water_summary.mean_power_proxy_kw }}</p>
+    <p>Mean fuel proxy: {{ calm_water_summary.mean_fuel_proxy_kgph }}</p>
+    <p>Aggregate resistance proxy: {{ calm_water_summary.aggregate_resistance_proxy }}</p>
+    <p>Aggregate power proxy: {{ calm_water_summary.aggregate_power_proxy_kw }}</p>
+    <p>Aggregate fuel proxy: {{ calm_water_summary.aggregate_fuel_proxy_kgph }}</p>
+    <p>Reference aggregate resistance proxy: {{ calm_water_summary.reference_aggregate_resistance_proxy }}</p>
+    <p>Reference aggregate power proxy: {{ calm_water_summary.reference_aggregate_power_proxy_kw }}</p>
+    <p>Reference aggregate fuel proxy: {{ calm_water_summary.reference_aggregate_fuel_proxy_kgph }}</p>
+    <p>Resistance improvement: {{ calm_water_summary.resistance_improvement_pct }}%</p>
+    <p>Power improvement: {{ calm_water_summary.power_improvement_pct }}%</p>
+    <p>Fuel improvement: {{ calm_water_summary.fuel_improvement_pct }}%</p>
+    <p>Dominant speed: {{ calm_water_summary.dominant_speed_knots }}</p>
+    <p>Calm-water penalty: {{ calm_water_summary.calm_water_penalty }}</p>
+    {% endif %}
+    {% if wave_response_summary %}
+    <h2>Wave-response surrogate</h2>
+    <p>Wave height: {{ wave_response_summary.wave_height_m }}</p>
+    <p>Wave period: {{ wave_response_summary.wave_period_s }}</p>
+    <p>Scenario source: {{ wave_response_summary.scenario_source }}</p>
+    <p>Scenario count: {{ wave_response_summary.scenario_count }}</p>
+    <p>Dominant scenario: {{ wave_response_summary.dominant_scenario_label }}</p>
+    <p>Added resistance proxy: {{ wave_response_summary.added_resistance_proxy }}</p>
+    <p>Added power proxy: {{ wave_response_summary.added_power_proxy_kw }}</p>
+    <p>Wave penalty: {{ wave_response_summary.wave_penalty }}</p>
+    <p>Condition status: {{ wave_response_summary.condition_status }}</p>
+    {% if wave_response_summary.scenario_rows %}
+    <h3>Wave scenarios</h3>
+    <ul>
+      {% for row in wave_response_summary.scenario_rows %}
+      <li>{{ row }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% endif %}
+    {% if multi_condition_summary %}
+    <h2>Multi-condition objective</h2>
+    <p>Combined penalty: {{ multi_condition_summary.combined_penalty }}</p>
+    <p>Combined objective score: {{ multi_condition_summary.combined_objective_score }}</p>
+    <p>Dominant condition: {{ multi_condition_summary.dominant_condition }}</p>
+    <p>Calm-water weight: {{ multi_condition_summary.calm_water_weight }}</p>
+    <p>Wave-response weight: {{ multi_condition_summary.wave_response_weight }}</p>
+    {% endif %}
+    {% if baseline_summary %}
+    <h2>Baseline comparison</h2>
+    <p>Reference vs candidate: {{ baseline_summary.reference_vs_candidate }}</p>
+    <p>Reference aggregate power proxy: {{ baseline_summary.reference_aggregate_power_proxy_kw }}</p>
+    <p>Reference aggregate fuel proxy: {{ baseline_summary.reference_aggregate_fuel_proxy_kgph }}</p>
+    <p>Resistance improvement: {{ baseline_summary.resistance_improvement_pct }}%</p>
+    <p>Power improvement: {{ baseline_summary.power_improvement_pct }}%</p>
+    <p>Fuel improvement: {{ baseline_summary.fuel_improvement_pct }}%</p>
+    {% endif %}
+    {% if high_fidelity_boundary %}
+    <h2>High-fidelity boundary</h2>
+    <p>Adapter: {{ high_fidelity_boundary.adapter }}</p>
+    <p>Available: {{ high_fidelity_boundary.available }}</p>
+    <p>Used: {{ high_fidelity_boundary.used }}</p>
+    <p>Mode: {{ high_fidelity_boundary.mode }}</p>
+    {% endif %}
+    {% if best_candidate.acceptability %}
+    <h2>Acceptability summary</h2>
+    <p>Acceptability level: {{ best_candidate.acceptability.level }}</p>
+    <p>Acceptable: {{ best_candidate.acceptability.is_acceptable }}</p>
+    <p>Hydrostatics status: {{ best_candidate.acceptability.hydrostatics_status }}</p>
+    <p>Operational profile status: {{ best_candidate.acceptability.operational_profile_status }}</p>
+    <p>Wave response status: {{ best_candidate.acceptability.wave_response_status }}</p>
+    <p>Reasons: {{ best_candidate.acceptability.reasons|join(", ") if best_candidate.acceptability.reasons else "none" }}</p>
+    {% endif %}
+    {% endif %}
+    {% if optimization_trace %}
+    <h2>Optimization trace</h2>
+    <p>{{ optimization_trace.summary }}</p>
+    {% if optimization_trace.rows %}
+    <ul>
+      {% for row in optimization_trace.rows %}
+      <li>{{ row }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
     {% endif %}
     {% if ranked_candidates %}
     <h2>Candidate Comparison</h2>
@@ -55,13 +162,29 @@
       {% for candidate in ranked_candidates %}
       <li>
         {{ candidate.candidate_id }} |
+        level={{ candidate.acceptability.level }} |
         fast={{ candidate.fast_score }} |
-        mid={{ candidate.mid_score }} |
-        resistance={{ candidate.score_components.resistance_proxy }} |
-        slenderness={{ candidate.geometry_metrics.slenderness_ratio }}
-      </li>
+          mid={{ candidate.mid_score }} |
+          resistance={{ candidate.score_components.resistance_proxy }} |
+          hydro={{ candidate.score_components.hydrostatic_penalty }} |
+          calm={{ candidate.score_components.calm_water_penalty }} |
+          wave={{ candidate.score_components.wave_penalty }} |
+          slenderness={{ candidate.geometry_metrics.slenderness_ratio }} |
+          reasons={{ candidate.acceptability.reasons|join(", ") if candidate.acceptability.reasons else "none" }}
+        </li>
       {% endfor %}
     </ul>
+    {% endif %}
+    {% if ranked_candidates %}
+    {% set rejected = ranked_candidates | selectattr('acceptability.level', 'equalto', 'reject') | list %}
+    {% if rejected %}
+    <h2>Rejected candidates</h2>
+    <ul>
+      {% for candidate in rejected %}
+        <li>{{ candidate.candidate_id }} | resistance={{ candidate.score_components.resistance_proxy }} | hydro={{ candidate.score_components.hydrostatic_penalty }} | calm={{ candidate.score_components.calm_water_penalty }} | wave={{ candidate.score_components.wave_penalty }} | reasons={{ candidate.acceptability.reasons|join(", ") if candidate.acceptability.reasons else "none" }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
     {% endif %}
   </body>
 </html>
