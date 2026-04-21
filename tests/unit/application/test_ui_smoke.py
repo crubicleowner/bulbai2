@@ -613,6 +613,32 @@ def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, mon
         app.processEvents()
 
 
+def test_case_wizard_exposes_optimization_mode_selector(tmp_path: Path, monkeypatch) -> None:
+    """Spec §11.3/§11.4: the engineer chooses between generate_new_bulb and
+    local_optimize; the wizard's payload must reflect the selection.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    app = QApplication.instance() or QApplication([])
+    wizard = CaseWizard()
+    try:
+        combo = wizard.findChild(QComboBox, "optimization_mode_combo")
+        assert combo is not None
+        assert {combo.itemText(i) for i in range(combo.count())} == {
+            "generate_new_bulb",
+            "local_optimize",
+        }
+        # Default is generate_new_bulb.
+        assert wizard.payload()["optimization_mode"] == "generate_new_bulb"
+        # Switch to local_optimize.
+        local_index = combo.findText("local_optimize")
+        combo.setCurrentIndex(local_index)
+        assert wizard.payload()["optimization_mode"] == "local_optimize"
+    finally:
+        wizard.close()
+        app.processEvents()
+
+
 def test_main_window_resume_button_enabled_only_for_recoverable_cases(
     tmp_path: Path, monkeypatch
 ) -> None:

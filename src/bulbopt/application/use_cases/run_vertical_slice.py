@@ -72,7 +72,11 @@ def _execute_slice(
         candidates = worker.run_strict(
             case.case_id,
             "generate_candidates",
-            lambda: geometry.generate_candidates(case_dir, count=command.candidate_count),
+            lambda: geometry.generate_candidates(
+                case_dir,
+                count=command.candidate_count,
+                optimization_mode=command.optimization_mode,
+            ),
             resume=resume,
         )
         repository.save_candidate_index(case.case_id, candidates)

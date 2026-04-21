@@ -70,7 +70,12 @@ class StubGeometryAdapter:
             raise ValueError("PyMeshFix repair produced an empty mesh")
         return repaired_mesh
 
-    def generate_candidates(self, case_dir: Path, count: int) -> list[dict]:
+    def generate_candidates(
+        self,
+        case_dir: Path,
+        count: int,
+        optimization_mode: str = "generate_new_bulb",
+    ) -> list[dict]:
         repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
         analysis_path = case_dir / "working" / "repaired" / "geometry_analysis.json"
         mesh = self._load_mesh(repaired_path)
@@ -78,18 +83,19 @@ class StubGeometryAdapter:
 
         candidates: list[dict] = []
         candidate_paths: dict[str, str] = {}
-        for index, profile in enumerate(self._candidate_profiles(count), start=1):
+        for index, profile in enumerate(self._candidate_profiles(count, optimization_mode), start=1):
             candidate_id = f"candidate-{index}"
             candidate_path = case_dir / "working" / "candidates" / f"{candidate_id}.stl"
             candidate_mesh = self._deform_bow_region(mesh, analysis, profile)
             candidate_path.write_bytes(trimesh.exchange.stl.export_stl(candidate_mesh))
             candidate_paths[candidate_id] = str(candidate_path)
+            profile_with_mode = {**profile, "optimization_mode": optimization_mode}
             candidates.append(
                 {
                     "candidate_id": candidate_id,
                     "geometry_path": str(candidate_path),
                     "status": "generated",
-                    "generation_profile": profile,
+                    "generation_profile": profile_with_mode,
                     "bulb_region": analysis["bulb_region"],
                 }
             )
@@ -160,23 +166,44 @@ class StubGeometryAdapter:
             },
         }
 
-    def _candidate_profiles(self, count: int) -> list[dict[str, float]]:
-        base_profiles = [
-            {"axial_push": 0.008, "beam_scale": 0.012, "draft_scale": -0.006},
-            {"axial_push": 0.014, "beam_scale": 0.02, "draft_scale": -0.01},
-            {"axial_push": 0.02, "beam_scale": 0.028, "draft_scale": -0.014},
-        ]
+    def _candidate_profiles(
+        self,
+        count: int,
+        optimization_mode: str = "generate_new_bulb",
+    ) -> list[dict[str, float]]:
+        """Per spec §11.3/§11.4 the two modes produce different deformation sets.
+
+        ``generate_new_bulb`` pushes the bow aggressively to create distinctly
+        different bulb candidates; ``local_optimize`` keeps amplitudes small
+        so the user gets local refinement of an already-existing bulb.
+        """
+        if optimization_mode == "local_optimize":
+            base_profiles = [
+                {"axial_push": 0.003, "beam_scale": 0.004, "draft_scale": -0.002},
+                {"axial_push": 0.005, "beam_scale": 0.006, "draft_scale": -0.003},
+                {"axial_push": 0.007, "beam_scale": 0.008, "draft_scale": -0.004},
+            ]
+            growth_step = (0.0015, 0.002, -0.001)
+        else:
+            base_profiles = [
+                {"axial_push": 0.008, "beam_scale": 0.012, "draft_scale": -0.006},
+                {"axial_push": 0.014, "beam_scale": 0.02, "draft_scale": -0.01},
+                {"axial_push": 0.02, "beam_scale": 0.028, "draft_scale": -0.014},
+            ]
+            growth_step = (0.003, 0.004, -0.002)
+
         if count <= len(base_profiles):
             return base_profiles[:count]
 
         profiles = list(base_profiles)
+        last_profile = base_profiles[-1]
         while len(profiles) < count:
             scale = len(profiles) - len(base_profiles) + 1
             profiles.append(
                 {
-                    "axial_push": 0.02 + (0.003 * scale),
-                    "beam_scale": 0.028 + (0.004 * scale),
-                    "draft_scale": -0.014 - (0.002 * scale),
+                    "axial_push": last_profile["axial_push"] + (growth_step[0] * scale),
+                    "beam_scale": last_profile["beam_scale"] + (growth_step[1] * scale),
+                    "draft_scale": last_profile["draft_scale"] + (growth_step[2] * scale),
                 }
             )
         return profiles

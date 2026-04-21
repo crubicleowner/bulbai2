@@ -1126,6 +1126,38 @@ def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Pat
     assert "Watertight after: True" in report_html
 
 
+def test_run_vertical_slice_local_optimize_mode_completes_and_marks_candidates(
+    tmp_path: Path,
+) -> None:
+    """Spec §11.4: launching with ``local_optimize`` must complete end-to-end
+    and the persisted candidate_index must reflect the mode so the report and
+    UI can distinguish local refinement runs from full regeneration.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="local-opt-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+            optimization_mode="local_optimize",
+        ),
+    )
+
+    assert summary.status in {"completed", "completed_with_warnings"}
+    case_dir = tmp_path / "projects" / summary.case_id
+    candidate_index = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
+    assert candidate_index, "Expected at least one candidate in local_optimize mode"
+    for candidate in candidate_index:
+        assert candidate["generation_profile"]["optimization_mode"] == "local_optimize"
+
+
 def test_resume_vertical_slice_recovers_from_persisted_case(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

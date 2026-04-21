@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QLabel,
@@ -66,12 +67,18 @@ class CaseWizard(QWidget):
 
         payload = default_case_payload()
         self._import_format = str(payload["import_format"])
-        self._optimization_mode = str(payload["optimization_mode"])
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Case Wizard"))
         layout.addWidget(QLabel(f"Import format: {self._import_format}"))
-        layout.addWidget(QLabel(f"Optimization mode: {self._optimization_mode}"))
+
+        self._optimization_mode_combo = QComboBox(self)
+        self._optimization_mode_combo.setObjectName("optimization_mode_combo")
+        self._optimization_mode_combo.addItems(["generate_new_bulb", "local_optimize"])
+        default_mode = str(payload["optimization_mode"])
+        default_index = self._optimization_mode_combo.findText(default_mode)
+        if default_index >= 0:
+            self._optimization_mode_combo.setCurrentIndex(default_index)
 
         self._case_name_input = QLineEdit(str(payload["case_name"]), self)
         self._case_name_input.setObjectName("case_name_input")
@@ -169,6 +176,7 @@ class CaseWizard(QWidget):
         )
 
         form_layout = QFormLayout()
+        form_layout.addRow("Optimization mode", self._optimization_mode_combo)
         form_layout.addRow("Case name", self._case_name_input)
         form_layout.addRow("Source STL", self._source_path_input)
         form_layout.addRow("Length (m)", self._vessel_length_input)
@@ -211,7 +219,7 @@ class CaseWizard(QWidget):
             "case_name": self._case_name_input.text().strip() or "stl-demo",
             "source_path": self._source_path_input.text().strip(),
             "import_format": self._import_format,
-            "optimization_mode": self._optimization_mode,
+            "optimization_mode": self._optimization_mode_combo.currentText(),
             "vessel_length_m": self._vessel_length_input.value(),
             "vessel_beam_m": self._vessel_beam_input.value(),
             "vessel_draft_m": self._vessel_draft_input.value(),

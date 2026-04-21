@@ -101,6 +101,42 @@ def test_prepare_geometry_records_repair_artifact_in_quality_report(tmp_path: Pa
     assert payload["quality_report"]["repair_status"] == "repaired"
 
 
+def test_generate_candidates_local_optimize_uses_smaller_deformations(tmp_path: Path) -> None:
+    """Spec §11.4: ``local_optimize`` morphs an existing bulb with constrained
+    shape changes — the deformation amplitude must be strictly smaller than
+    ``generate_new_bulb`` so the engineer gets local refinement, not bold
+    variants.
+    """
+    case_dir = _make_case_dir(tmp_path)
+    source_path = tmp_path / "demo.stl"
+    _write_watertight_stl(source_path)
+
+    adapter = StubGeometryAdapter()
+    adapter.prepare_geometry(case_dir, source_path)
+
+    generate_candidates = adapter.generate_candidates(
+        case_dir, count=3, optimization_mode="generate_new_bulb"
+    )
+    local_candidates = adapter.generate_candidates(
+        case_dir, count=3, optimization_mode="local_optimize"
+    )
+
+    for candidate in generate_candidates + local_candidates:
+        assert Path(candidate["geometry_path"]).exists()
+
+    generate_push = [float(c["generation_profile"]["axial_push"]) for c in generate_candidates]
+    local_push = [float(c["generation_profile"]["axial_push"]) for c in local_candidates]
+
+    assert max(local_push) < max(generate_push), (
+        f"Expected local_optimize axial_push to be strictly smaller than "
+        f"generate_new_bulb. Got local={local_push}, generate={generate_push}"
+    )
+    for candidate in local_candidates:
+        assert candidate["generation_profile"]["optimization_mode"] == "local_optimize"
+    for candidate in generate_candidates:
+        assert candidate["generation_profile"]["optimization_mode"] == "generate_new_bulb"
+
+
 def test_prepare_geometry_falls_back_when_pymeshfix_cannot_repair(tmp_path: Path) -> None:
     """When PyMeshFix produces an empty mesh (e.g. degenerate single-triangle
     input), ``prepare_geometry`` must not crash the pipeline: it preserves
