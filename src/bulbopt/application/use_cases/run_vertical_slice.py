@@ -154,6 +154,7 @@ def _execute_slice(
             lambda: openfoam_runner.run_case(
                 case_dir / "working" / "openfoam_case",
                 case_manifest=high_fidelity_boundary,
+                execute=True,
             ),
             resume=resume,
         )
