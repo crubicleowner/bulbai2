@@ -149,6 +149,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                     "objective_weights": objective_weights,
                     "acceptability_thresholds": acceptability_thresholds,
                     "optimization_trace": optimization_trace,
+                    "repair_summary": _repair_summary_payload(geometry_analysis),
                     "operational_profile_summary": best_candidate.get("calm_water_metrics", {}),
                     "calm_water_summary": best_candidate.get("calm_water_metrics", {}),
                     "wave_response_summary": best_candidate.get("wave_response_metrics", {}),
@@ -400,3 +401,17 @@ def _normalized_candidate(candidate: dict) -> dict:
     normalized = dict(candidate)
     normalized["acceptability"] = _normalized_acceptability(candidate)
     return normalized
+
+
+def _repair_summary_payload(geometry_analysis: dict) -> dict:
+    quality_report = geometry_analysis.get("quality_report", {})
+    return {
+        "repair_status": quality_report.get("repair_status", "not_needed"),
+        "repaired": quality_report.get("repaired", False),
+        "watertight": quality_report.get("watertight"),
+        "watertight_before": quality_report.get("watertight_before"),
+        "vertices_count": quality_report.get("vertices_count"),
+        "faces_count": quality_report.get("faces_count"),
+        "vertices_count_before": quality_report.get("vertices_count_before"),
+        "faces_count_before": quality_report.get("faces_count_before"),
+    }

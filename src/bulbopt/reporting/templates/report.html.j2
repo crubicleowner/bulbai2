@@ -12,6 +12,14 @@
     <p>Runtime budget: {{ runtime_budget_hours }} h</p>
     <p>Candidate count: {{ candidate_count }}</p>
     <p>Processed candidates: {{ processed_candidates }}</p>
+    {% if repair_summary %}
+    <h2>Geometry repair</h2>
+    <p>Repair status: {{ repair_summary.repair_status }}</p>
+    <p>Watertight before: {{ repair_summary.watertight_before }}</p>
+    <p>Watertight after: {{ repair_summary.watertight }}</p>
+    <p>Vertices (before → after): {{ repair_summary.vertices_count_before }} → {{ repair_summary.vertices_count }}</p>
+    <p>Faces (before → after): {{ repair_summary.faces_count_before }} → {{ repair_summary.faces_count }}</p>
+    {% endif %}
     {% if objective_weights %}
     <h2>Objective weights</h2>
     <p>Resistance weight: {{ objective_weights.resistance_weight }}</p>

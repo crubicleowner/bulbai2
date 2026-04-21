@@ -1098,6 +1098,34 @@ def test_run_vertical_slice_marks_case_completed_with_warnings_when_best_candida
     assert "completed_with_warnings" in report_html
 
 
+def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Path) -> None:
+    """Spec §14 demands engineering-honest reporting of repair activity so
+    the HTML report always includes the geometry repair summary block.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="repair-report-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    report_html = (case_dir / "outputs" / "reports" / "report.html").read_text(encoding="utf-8")
+    assert "Geometry repair" in report_html
+    assert "Repair status: not_needed" in report_html
+    assert "Watertight before: True" in report_html
+    assert "Watertight after: True" in report_html
+
+
 def test_run_vertical_slice_records_checkpoint_per_stage(tmp_path: Path) -> None:
     source_path = tmp_path / "demo.stl"
     _write_valid_stl(source_path)
