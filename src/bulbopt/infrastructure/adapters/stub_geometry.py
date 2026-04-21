@@ -68,6 +68,28 @@ class StubGeometryAdapter:
         )
         return analysis
 
+    def detect_bulb_region(self, source_path: Path) -> dict:
+        """Return a bulb-region preview without writing any artifacts (spec §11.2).
+
+        Used by the desktop "Detect Bulb Region" button so the engineer can
+        review the auto-detected axis_min/axis_max before deciding whether to
+        commit to a full run with or without an override.
+        """
+
+        source_mesh = self._load_mesh(source_path)
+        before_stats = {
+            "vertices_count_before": int(len(source_mesh.vertices)),
+            "faces_count_before": int(len(source_mesh.faces)),
+            "watertight_before": bool(source_mesh.is_watertight),
+        }
+        return self._build_geometry_analysis(
+            source_mesh,
+            repaired_path=source_path,
+            before_stats=before_stats,
+            repaired=False,
+            repair_status="preview_only",
+        )
+
     def _repair_with_pymeshfix(self, mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         fix = pymeshfix.MeshFix(np.asarray(mesh.vertices, dtype=float), np.asarray(mesh.faces, dtype=np.int64))
         fix.repair()

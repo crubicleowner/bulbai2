@@ -58,6 +58,8 @@ class MainWindow(QMainWindow):
         self._case_history_summary_label: QLabel | None = None
         self._case_history_list_widget: QListWidget | None = None
         self._resume_case_button: QPushButton | None = None
+        self._detect_bulb_region_button: QPushButton | None = None
+        self._bulb_region_preview_label: QLabel | None = None
         self._last_case_dir: Path | None = None
         self._last_report_path: Path | None = None
         self._last_best_candidate_path: Path | None = None
@@ -76,6 +78,15 @@ class MainWindow(QMainWindow):
         ready_label = QLabel("Ready for STL-first vertical slice", central_widget)
         ready_label.setObjectName("ready_state_label")
         self._case_wizard = CaseWizard(central_widget)
+
+        self._detect_bulb_region_button = QPushButton("Detect Bulb Region", central_widget)
+        self._detect_bulb_region_button.setObjectName("detect_bulb_region_button")
+        self._detect_bulb_region_button.clicked.connect(self._detect_bulb_region)
+        self._bulb_region_preview_label = QLabel(
+            "Bulb region preview: not detected yet",
+            central_widget,
+        )
+        self._bulb_region_preview_label.setObjectName("bulb_region_preview_label")
 
         run_button = QPushButton("Run Vertical Slice", central_widget)
         run_button.setObjectName("run_vertical_slice_button")
@@ -217,6 +228,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(app_label)
         layout.addWidget(ready_label)
         layout.addWidget(self._case_wizard)
+        layout.addWidget(self._detect_bulb_region_button)
+        layout.addWidget(self._bulb_region_preview_label)
         layout.addWidget(run_button)
         layout.addWidget(self._run_status_label)
         layout.addWidget(results_label)
@@ -383,6 +396,43 @@ class MainWindow(QMainWindow):
         self._open_report_button.setEnabled(True)
         self._open_best_candidate_button.setEnabled(self._last_best_candidate_path is not None)
         self._refresh_case_history()
+
+    def _detect_bulb_region(self) -> None:
+        """Run the detect-only geometry preview so the engineer can review
+        the auto-detected axis_min/axis_max before committing to a full run
+        (spec §11.2).
+        """
+        if self._case_wizard is None or self._bulb_region_preview_label is None:
+            return
+        detect = self.services.get("detect_bulb_region")
+        if not callable(detect):
+            self._bulb_region_preview_label.setText("Detect Bulb Region: service not available")
+            return
+
+        payload = self._case_wizard.payload()
+        source_path = str(payload.get("source_path") or "")
+        if not source_path:
+            self._bulb_region_preview_label.setText(
+                "Detect Bulb Region: please select a source STL first"
+            )
+            return
+
+        try:
+            preview = detect(source_path)
+        except Exception as error:
+            self._bulb_region_preview_label.setText(f"Detect Bulb Region failed: {error}")
+            return
+
+        bulb_region = preview.get("bulb_region", {})
+        quality_report = preview.get("quality_report", {})
+        self._bulb_region_preview_label.setText(
+            "Bulb region preview: "
+            f"axis={bulb_region.get('axis_index', 'n/a')} "
+            f"auto_min={bulb_region.get('auto_axis_min', 'n/a')} "
+            f"auto_max={bulb_region.get('auto_axis_max', 'n/a')} "
+            f"mask_ratio={bulb_region.get('mask_ratio', 'n/a')} "
+            f"watertight={quality_report.get('watertight', 'n/a')}"
+        )
 
     def _refresh_case_history(self) -> None:
         """Populate the case history panel from the repository (spec §10)."""

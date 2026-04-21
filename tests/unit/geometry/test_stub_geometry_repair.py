@@ -107,6 +107,31 @@ def test_prepare_geometry_records_repair_artifact_in_quality_report(tmp_path: Pa
     assert payload["quality_report"]["repair_status"] == "repaired"
 
 
+def test_detect_bulb_region_returns_preview_without_creating_artifacts(tmp_path: Path) -> None:
+    """Spec §11.2 "reviews the automatically detected bulb area" — the engineer
+    needs to see the proposed region *before* committing to a full run. The
+    detect-only path must not write any artifacts (no repaired.stl, no
+    analysis.json, no artifacts_index.json), since no case exists yet.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_watertight_stl(source_path)
+
+    adapter = StubGeometryAdapter()
+    preview = adapter.detect_bulb_region(source_path)
+
+    assert "bulb_region" in preview
+    assert "auto_axis_min" in preview["bulb_region"]
+    assert "auto_axis_max" in preview["bulb_region"]
+    assert preview["bulb_region"]["confirmation_source"] == "auto_detected"
+    assert preview["quality_report"]["watertight"] is True
+
+    # Nothing written to disk — the detect preview is pure.
+    extra_entries = [item for item in tmp_path.iterdir() if item.name != "demo.stl"]
+    assert extra_entries == [], (
+        f"detect_bulb_region should not write artifacts, found: {extra_entries}"
+    )
+
+
 def test_prepare_geometry_accepts_user_bulb_region_override(tmp_path: Path) -> None:
     """Spec §11.2: the engineer must be able to review and *adjust* the
     auto-detected bulb area. ``bulb_region_override`` lets the UI pass a

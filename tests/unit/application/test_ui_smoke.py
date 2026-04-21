@@ -613,6 +613,64 @@ def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, mon
         app.processEvents()
 
 
+def test_main_window_detect_bulb_region_button_populates_preview_label(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Spec §11.2: engineer clicks "Detect Bulb Region" and sees the
+    auto-detected axis_min/axis_max without running the full pipeline.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    def fake_detect(source_path: str) -> dict:
+        return {
+            "bulb_region": {
+                "axis_index": 0,
+                "auto_axis_min": 3.4,
+                "auto_axis_max": 4.0,
+                "mask_ratio": 0.12,
+                "confirmation_source": "auto_detected",
+            },
+            "quality_report": {"watertight": True},
+        }
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": lambda **kwargs: CaseSummary(
+                case_id="case-1",
+                case_name="demo",
+                status="completed",
+                best_candidate_id="cand-1",
+            ),
+            "list_cases": lambda: [],
+            "detect_bulb_region": fake_detect,
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+    try:
+        central_widget = window.centralWidget()
+        assert central_widget is not None
+        button = central_widget.findChild(QPushButton, "detect_bulb_region_button")
+        label = central_widget.findChild(QLabel, "bulb_region_preview_label")
+        assert button is not None
+        assert label is not None
+        assert label.text() == "Bulb region preview: not detected yet"
+
+        button.click()
+        app.processEvents()
+
+        text = label.text()
+        assert "auto_min=3.4" in text
+        assert "auto_max=4.0" in text
+        assert "axis=0" in text
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_case_wizard_exposes_bulb_region_override_fields(tmp_path: Path, monkeypatch) -> None:
     """Spec §11.2: the engineer confirms or adjusts the auto-detected bulb
     region. The wizard exposes axis_min/axis_max override fields that flow
