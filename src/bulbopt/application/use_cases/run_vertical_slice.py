@@ -5,6 +5,8 @@ from pathlib import Path
 from bulbopt.application.contracts.models import CaseSummary, CreateCaseCommand
 from bulbopt.application.use_cases.create_case import create_case
 from bulbopt.domain.core.models import CaseStatus
+from bulbopt.execution.checkpoints.file_checkpoint_store import FileCheckpointStore
+from bulbopt.execution.worker.local_worker import LocalWorker
 from bulbopt.infrastructure.adapters.html_report import HtmlReportAdapter
 from bulbopt.infrastructure.adapters.openfoam_adapter import OpenFOAMAdapter
 from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
@@ -27,10 +29,21 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
     openfoam = OpenFOAMAdapter()
     openfoam_runner = OpenFOAMRunnerAdapter()
     report = HtmlReportAdapter(template_root=_template_root())
+    worker = LocalWorker(
+        checkpoint_store=FileCheckpointStore(root_dir=case_dir / "working" / "checkpoints"),
+    )
 
     try:
-        geometry_analysis = geometry.prepare_geometry(case_dir, Path(command.source_path))
-        candidates = geometry.generate_candidates(case_dir, count=command.candidate_count)
+        geometry_analysis = worker.run_strict(
+            case.case_id,
+            "prepare_geometry",
+            lambda: geometry.prepare_geometry(case_dir, Path(command.source_path)),
+        )
+        candidates = worker.run_strict(
+            case.case_id,
+            "generate_candidates",
+            lambda: geometry.generate_candidates(case_dir, count=command.candidate_count),
+        )
         repository.save_candidate_index(case.case_id, candidates)
 
         objective_weights = {
@@ -51,32 +64,48 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
             "reject_speed_balance_ratio": command.reject_speed_balance_ratio,
             "reject_wave_penalty": command.reject_wave_penalty,
         }
-        evaluated_candidates = evaluation.evaluate_candidates(
-            candidates,
-            objective_weights=objective_weights,
-            speed_knots=command.speed_knots,
-            operational_profile_weights=command.operational_profile_weights,
-            wave_height_m=command.wave_height_m,
-            wave_period_s=command.wave_period_s,
-            wave_scenario_heights_m=command.wave_scenario_heights_m,
-            wave_scenario_periods_s=command.wave_scenario_periods_s,
-            wave_scenario_weights=command.wave_scenario_weights,
-            acceptability_thresholds=acceptability_thresholds,
+        evaluated_candidates = worker.run_strict(
+            case.case_id,
+            "evaluate_candidates",
+            lambda: evaluation.evaluate_candidates(
+                candidates,
+                objective_weights=objective_weights,
+                speed_knots=command.speed_knots,
+                operational_profile_weights=command.operational_profile_weights,
+                wave_height_m=command.wave_height_m,
+                wave_period_s=command.wave_period_s,
+                wave_scenario_heights_m=command.wave_scenario_heights_m,
+                wave_scenario_periods_s=command.wave_scenario_periods_s,
+                wave_scenario_weights=command.wave_scenario_weights,
+                acceptability_thresholds=acceptability_thresholds,
+            ),
         )
         evaluated_candidates = [_normalized_candidate(candidate) for candidate in evaluated_candidates]
         json_store.write(case_dir / "evaluation_index.json", evaluated_candidates)
-        ranked_candidates = optimization.rank_candidates(evaluated_candidates)
+        ranked_candidates = worker.run_strict(
+            case.case_id,
+            "rank_candidates",
+            lambda: optimization.rank_candidates(evaluated_candidates),
+        )
         best_candidate = ranked_candidates[0]
         optimization_summary = optimization.summarize_ranking(evaluated_candidates)
         optimization_trace = optimization.build_trace(evaluated_candidates)
-        high_fidelity_boundary = openfoam.build_case(
-            case_dir,
-            best_candidate_id=best_candidate["candidate_id"],
-            best_candidate_geometry_path=Path(best_candidate["geometry_path"]),
+        high_fidelity_boundary = worker.run_strict(
+            case.case_id,
+            "openfoam_build_case",
+            lambda: openfoam.build_case(
+                case_dir,
+                best_candidate_id=best_candidate["candidate_id"],
+                best_candidate_geometry_path=Path(best_candidate["geometry_path"]),
+            ),
         )
-        runner_summary = openfoam_runner.run_case(
-            case_dir / "working" / "openfoam_case",
-            case_manifest=high_fidelity_boundary,
+        runner_summary = worker.run_strict(
+            case.case_id,
+            "openfoam_run_case",
+            lambda: openfoam_runner.run_case(
+                case_dir / "working" / "openfoam_case",
+                case_manifest=high_fidelity_boundary,
+            ),
         )
         high_fidelity_boundary.update(runner_summary)
         optimization_summary_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
@@ -102,31 +131,35 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
         )
         case.status = CaseStatus.ASSEMBLING_RESULTS
         repository.save_case(case)
-        report.build_html_report(
-            case_dir,
-            {
-                "case_name": case.case_name,
-                "status": _final_case_status(best_candidate).value,
-                "best_candidate_id": best_candidate["candidate_id"],
-                "best_candidate": best_candidate,
-                "ranked_candidates": ranked_candidates,
-                "optimization_summary": optimization_summary,
-                "runtime_budget_hours": command.runtime_budget_hours,
-                "candidate_count": command.candidate_count,
-                "processed_candidates": len(evaluated_candidates),
-                "objective_weights": objective_weights,
-                "acceptability_thresholds": acceptability_thresholds,
-                "optimization_trace": optimization_trace,
-                "operational_profile_summary": best_candidate.get("calm_water_metrics", {}),
-                "calm_water_summary": best_candidate.get("calm_water_metrics", {}),
-                "wave_response_summary": best_candidate.get("wave_response_metrics", {}),
-                "baseline_summary": case.summary_metrics.get("baseline", {}),
-                "multi_condition_summary": case.summary_metrics.get("multi_condition_objective", {}),
-                "selection_priority_summary": case.summary_metrics.get("selection_priority", {}),
-                "high_fidelity_boundary": case.summary_metrics.get("high_fidelity_boundary", {}),
-                "openfoam_available": case.summary_metrics.get("high_fidelity_boundary", {}).get("available", False),
-                "high_fidelity_used": case.summary_metrics.get("high_fidelity_boundary", {}).get("used", False),
-            },
+        worker.run_strict(
+            case.case_id,
+            "build_html_report",
+            lambda: str(report.build_html_report(
+                case_dir,
+                {
+                    "case_name": case.case_name,
+                    "status": _final_case_status(best_candidate).value,
+                    "best_candidate_id": best_candidate["candidate_id"],
+                    "best_candidate": best_candidate,
+                    "ranked_candidates": ranked_candidates,
+                    "optimization_summary": optimization_summary,
+                    "runtime_budget_hours": command.runtime_budget_hours,
+                    "candidate_count": command.candidate_count,
+                    "processed_candidates": len(evaluated_candidates),
+                    "objective_weights": objective_weights,
+                    "acceptability_thresholds": acceptability_thresholds,
+                    "optimization_trace": optimization_trace,
+                    "operational_profile_summary": best_candidate.get("calm_water_metrics", {}),
+                    "calm_water_summary": best_candidate.get("calm_water_metrics", {}),
+                    "wave_response_summary": best_candidate.get("wave_response_metrics", {}),
+                    "baseline_summary": case.summary_metrics.get("baseline", {}),
+                    "multi_condition_summary": case.summary_metrics.get("multi_condition_objective", {}),
+                    "selection_priority_summary": case.summary_metrics.get("selection_priority", {}),
+                    "high_fidelity_boundary": case.summary_metrics.get("high_fidelity_boundary", {}),
+                    "openfoam_available": case.summary_metrics.get("high_fidelity_boundary", {}).get("available", False),
+                    "high_fidelity_used": case.summary_metrics.get("high_fidelity_boundary", {}).get("used", False),
+                },
+            )),
         )
         case.status = _final_case_status(best_candidate)
         case.is_recoverable = False

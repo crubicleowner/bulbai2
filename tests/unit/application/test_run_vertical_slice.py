@@ -1096,3 +1096,98 @@ def test_run_vertical_slice_marks_case_completed_with_warnings_when_best_candida
     assert case_payload["summary_metrics"]["hydrostatics"]["constraint_status"] == "warn"
     assert "volume_delta_exceeds_limit" in case_payload["summary_metrics"]["hydrostatics"]["warnings"]
     assert "completed_with_warnings" in report_html
+
+
+def test_run_vertical_slice_records_checkpoint_per_stage(tmp_path: Path) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="checkpoint-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    checkpoints_dir = case_dir / "working" / "checkpoints"
+
+    assert checkpoints_dir.exists()
+    checkpoint_files = list(checkpoints_dir.glob("*.json"))
+    assert checkpoint_files, "Expected per-stage checkpoint files after a successful run"
+
+    stage_names = {
+        path.stem.split(f"{summary.case_id}-", 1)[1] if path.stem.startswith(f"{summary.case_id}-") else path.stem
+        for path in checkpoint_files
+    }
+    expected_stages = {
+        "prepare_geometry",
+        "generate_candidates",
+        "evaluate_candidates",
+        "rank_candidates",
+        "openfoam_build_case",
+        "openfoam_run_case",
+        "build_html_report",
+    }
+    missing_stages = expected_stages - stage_names
+    assert not missing_stages, f"Missing checkpoint stages: {sorted(missing_stages)}"
+
+    for checkpoint_path in checkpoint_files:
+        payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        assert payload["status"] == "completed", (
+            f"Checkpoint {checkpoint_path.name} should be completed, got {payload['status']}"
+        )
+
+
+def test_run_vertical_slice_records_recoverable_checkpoint_on_stage_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+    project_root = tmp_path / "projects"
+
+    from bulbopt.infrastructure.adapters.stub_evaluation import StubEvaluationAdapter
+
+    def boom(self, *args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("evaluation failure")
+
+    monkeypatch.setattr(StubEvaluationAdapter, "evaluate_candidates", boom)
+
+    with pytest.raises(RuntimeError, match="evaluation failure"):
+        run_vertical_slice(
+            project_root=project_root,
+            command=CreateCaseCommand(
+                case_name="failing-stage-demo",
+                source_path=str(source_path),
+                vessel_length_m=142.0,
+                vessel_beam_m=19.1,
+                vessel_draft_m=6.0,
+                displacement_t=8420.0,
+                speed_knots=[18.0, 20.0],
+            ),
+        )
+
+    case_dirs = list(project_root.iterdir())
+    assert len(case_dirs) == 1
+    case_dir = case_dirs[0]
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    assert case_payload["status"] == "failed"
+    assert case_payload["is_recoverable"] is True
+
+    checkpoints_dir = case_dir / "working" / "checkpoints"
+    failing_checkpoint = next(
+        (path for path in checkpoints_dir.glob("*.json") if "evaluate_candidates" in path.stem),
+        None,
+    )
+    assert failing_checkpoint is not None, "Expected evaluate_candidates checkpoint to be written even on failure"
+    payload = json.loads(failing_checkpoint.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["is_recoverable"] is True
+    assert "evaluation failure" in payload["error"]
