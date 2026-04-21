@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pymeshfix
 import trimesh
 
 from bulbopt.storage.filesystem.json_store import JsonStore
@@ -16,11 +17,40 @@ class StubGeometryAdapter:
         source_bytes = source_path.read_bytes()
         input_copy_path = case_dir / "input" / source_path.name
         input_copy_path.write_bytes(source_bytes)
-        repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
-        repaired_path.write_bytes(source_bytes)
 
-        mesh = self._load_mesh(source_path)
-        analysis = self._build_geometry_analysis(mesh, repaired_path)
+        source_mesh = self._load_mesh(source_path)
+        before_stats = {
+            "vertices_count_before": int(len(source_mesh.vertices)),
+            "faces_count_before": int(len(source_mesh.faces)),
+            "watertight_before": bool(source_mesh.is_watertight),
+        }
+
+        repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
+        if before_stats["watertight_before"]:
+            repaired_path.write_bytes(source_bytes)
+            repaired_mesh = source_mesh
+            repaired = False
+            repair_status = "not_needed"
+        else:
+            try:
+                repaired_mesh = self._repair_with_pymeshfix(source_mesh)
+            except ValueError:
+                repaired_path.write_bytes(source_bytes)
+                repaired_mesh = source_mesh
+                repaired = False
+                repair_status = "failed"
+            else:
+                repaired_path.write_bytes(trimesh.exchange.stl.export_stl(repaired_mesh))
+                repaired = True
+                repair_status = "repaired"
+
+        analysis = self._build_geometry_analysis(
+            repaired_mesh,
+            repaired_path,
+            before_stats=before_stats,
+            repaired=repaired,
+            repair_status=repair_status,
+        )
         self._json_store.write(case_dir / "working" / "repaired" / "geometry_analysis.json", analysis)
         self._update_artifacts_index(
             case_dir,
@@ -31,6 +61,14 @@ class StubGeometryAdapter:
             },
         )
         return analysis
+
+    def _repair_with_pymeshfix(self, mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+        fix = pymeshfix.MeshFix(np.asarray(mesh.vertices, dtype=float), np.asarray(mesh.faces, dtype=np.int64))
+        fix.repair()
+        repaired_mesh = trimesh.Trimesh(vertices=fix.points, faces=fix.faces, process=True)
+        if repaired_mesh.is_empty:
+            raise ValueError("PyMeshFix repair produced an empty mesh")
+        return repaired_mesh
 
     def generate_candidates(self, case_dir: Path, count: int) -> list[dict]:
         repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
@@ -68,7 +106,15 @@ class StubGeometryAdapter:
         mesh.remove_unreferenced_vertices()
         return mesh
 
-    def _build_geometry_analysis(self, mesh: trimesh.Trimesh, repaired_path: Path) -> dict:
+    def _build_geometry_analysis(
+        self,
+        mesh: trimesh.Trimesh,
+        repaired_path: Path,
+        *,
+        before_stats: dict[str, int | bool] | None = None,
+        repaired: bool = False,
+        repair_status: str = "not_needed",
+    ) -> dict:
         bounds = mesh.bounds.astype(float)
         extents = mesh.extents.astype(float)
         primary_axis = int(np.argmax(extents))
@@ -83,12 +129,22 @@ class StubGeometryAdapter:
         if mesh.is_volume:
             volume = float(abs(mesh.volume))
 
+        before_stats = before_stats or {
+            "vertices_count_before": int(len(mesh.vertices)),
+            "faces_count_before": int(len(mesh.faces)),
+            "watertight_before": bool(mesh.is_watertight),
+        }
+
         return {
             "quality_report": {
                 "watertight": bool(mesh.is_watertight),
-                "repaired": False,
+                "repaired": bool(repaired),
+                "repair_status": str(repair_status),
                 "vertices_count": int(len(mesh.vertices)),
                 "faces_count": int(len(mesh.faces)),
+                "vertices_count_before": int(before_stats["vertices_count_before"]),
+                "faces_count_before": int(before_stats["faces_count_before"]),
+                "watertight_before": bool(before_stats["watertight_before"]),
                 "surface_area": float(mesh.area),
                 "volume": volume,
                 "bounds": bounds.tolist(),
