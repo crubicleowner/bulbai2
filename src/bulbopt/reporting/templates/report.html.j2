@@ -75,18 +75,24 @@
     {% endif %}
     {% if calm_water_summary %}
     <h2>Calm-water surrogate</h2>
+    <p>Surrogate model: {{ calm_water_summary.surrogate_model }}</p>
+    <p>Mean Froude number: {{ calm_water_summary.mean_froude_number }}</p>
     <p>Speed count: {{ calm_water_summary.speed_count }}</p>
     <p>Mean resistance proxy: {{ calm_water_summary.mean_resistance_proxy }}</p>
     <p>Mean power proxy: {{ calm_water_summary.mean_power_proxy_kw }}</p>
+    <p>Mean Effective power proxy: {{ calm_water_summary.mean_effective_power_proxy_kw }}</p>
     <p>Mean fuel proxy: {{ calm_water_summary.mean_fuel_proxy_kgph }}</p>
     <p>Aggregate resistance proxy: {{ calm_water_summary.aggregate_resistance_proxy }}</p>
     <p>Aggregate power proxy: {{ calm_water_summary.aggregate_power_proxy_kw }}</p>
+    <p>Aggregate Effective power proxy: {{ calm_water_summary.aggregate_effective_power_proxy_kw }}</p>
     <p>Aggregate fuel proxy: {{ calm_water_summary.aggregate_fuel_proxy_kgph }}</p>
     <p>Reference aggregate resistance proxy: {{ calm_water_summary.reference_aggregate_resistance_proxy }}</p>
     <p>Reference aggregate power proxy: {{ calm_water_summary.reference_aggregate_power_proxy_kw }}</p>
+    <p>Reference aggregate Effective power proxy: {{ calm_water_summary.reference_aggregate_effective_power_proxy_kw }}</p>
     <p>Reference aggregate fuel proxy: {{ calm_water_summary.reference_aggregate_fuel_proxy_kgph }}</p>
     <p>Resistance improvement: {{ calm_water_summary.resistance_improvement_pct }}%</p>
     <p>Power improvement: {{ calm_water_summary.power_improvement_pct }}%</p>
+    <p>Effective power improvement: {{ calm_water_summary.effective_power_improvement_pct }}%</p>
     <p>Fuel improvement: {{ calm_water_summary.fuel_improvement_pct }}%</p>
     <p>Dominant speed: {{ calm_water_summary.dominant_speed_knots }}</p>
     <p>Calm-water penalty: {{ calm_water_summary.calm_water_penalty }}</p>
@@ -134,6 +140,8 @@
     <p>Available: {{ high_fidelity_boundary.available }}</p>
     <p>Used: {{ high_fidelity_boundary.used }}</p>
     <p>Mode: {{ high_fidelity_boundary.mode }}</p>
+    <p>Case built: {{ high_fidelity_boundary.case_built }}</p>
+    <p>OpenFOAM case directory: {{ high_fidelity_boundary.case_directory }}</p>
     {% endif %}
     {% if best_candidate.acceptability %}
     <h2>Acceptability summary</h2>

@@ -41,6 +41,8 @@ def test_bootstrap_application_runs_vertical_slice_and_writes_report(
     case_dirs = list(project_root.iterdir())
     case_payload = JsonStore().read(case_dirs[0] / "case.json")
     report_html = (case_dirs[0] / "outputs" / "reports" / "report.html").read_text(encoding="utf-8")
+    openfoam_case_dir = case_dirs[0] / "working" / "openfoam_case"
+    openfoam_manifest = JsonStore().read(openfoam_case_dir / "openfoam_case_manifest.json")
 
     assert summary.status == "completed"
     assert len(case_dirs) == 1
@@ -55,6 +57,12 @@ def test_bootstrap_application_runs_vertical_slice_and_writes_report(
     assert "candidate-1" in report_html
     assert "candidate-2" in report_html
     assert "candidate-3" in report_html
+    assert openfoam_case_dir.exists()
+    assert (openfoam_case_dir / "system" / "controlDict").exists()
+    assert (openfoam_case_dir / "constant" / "triSurface" / "best_candidate.stl").exists()
+    assert openfoam_manifest["adapter"] == "openfoam"
+    assert openfoam_manifest["case_built"] is True
+    assert openfoam_manifest["best_candidate_id"] == summary.best_candidate_id
 
 
 def test_repository_create_case_rolls_back_when_initial_write_fails(tmp_path: Path) -> None:

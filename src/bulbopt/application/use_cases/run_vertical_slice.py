@@ -67,12 +67,18 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
         best_candidate = ranked_candidates[0]
         optimization_summary = optimization.summarize_ranking(evaluated_candidates)
         optimization_trace = optimization.build_trace(evaluated_candidates)
+        high_fidelity_boundary = openfoam.build_case(
+            case_dir,
+            best_candidate_id=best_candidate["candidate_id"],
+            best_candidate_geometry_path=Path(best_candidate["geometry_path"]),
+        )
         optimization_summary_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
         json_store.write(optimization_summary_path, optimization_summary)
         artifacts_index_path = case_dir / "artifacts_index.json"
         artifacts_index = json_store.read(artifacts_index_path)
         artifacts_index["optimization_summary"] = str(optimization_summary_path)
         artifacts_index["best_candidate_stl"] = str(best_candidate["geometry_path"])
+        artifacts_index["openfoam_case_manifest"] = str(case_dir / "working" / "openfoam_case" / "openfoam_case_manifest.json")
         json_store.write(artifacts_index_path, artifacts_index)
         case.summary_metrics = _build_case_summary_metrics(
             geometry_analysis=geometry_analysis,
@@ -84,7 +90,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
             acceptability_thresholds=acceptability_thresholds,
             ranked_candidates=ranked_candidates,
             optimization_trace=optimization_trace,
-            high_fidelity_boundary=openfoam.boundary_summary(),
+            high_fidelity_boundary=high_fidelity_boundary,
         )
         case.status = CaseStatus.ASSEMBLING_RESULTS
         repository.save_case(case)
@@ -232,18 +238,24 @@ def _build_case_summary_metrics(
             "operational_profile_weights": calm_water_metrics.get("operational_profile_weights", []),
         },
         "calm_water": {
+            "surrogate_model": calm_water_metrics.get("surrogate_model"),
+            "mean_froude_number": calm_water_metrics.get("mean_froude_number"),
             "speed_count": calm_water_metrics.get("speed_count"),
             "mean_resistance_proxy": calm_water_metrics.get("mean_resistance_proxy"),
             "mean_power_proxy_kw": calm_water_metrics.get("mean_power_proxy_kw"),
+            "mean_effective_power_proxy_kw": calm_water_metrics.get("mean_effective_power_proxy_kw"),
             "mean_fuel_proxy_kgph": calm_water_metrics.get("mean_fuel_proxy_kgph"),
             "aggregate_resistance_proxy": calm_water_metrics.get("aggregate_resistance_proxy"),
             "aggregate_power_proxy_kw": calm_water_metrics.get("aggregate_power_proxy_kw"),
+            "aggregate_effective_power_proxy_kw": calm_water_metrics.get("aggregate_effective_power_proxy_kw"),
             "aggregate_fuel_proxy_kgph": calm_water_metrics.get("aggregate_fuel_proxy_kgph"),
             "reference_aggregate_resistance_proxy": calm_water_metrics.get("reference_aggregate_resistance_proxy"),
             "reference_aggregate_power_proxy_kw": calm_water_metrics.get("reference_aggregate_power_proxy_kw"),
+            "reference_aggregate_effective_power_proxy_kw": calm_water_metrics.get("reference_aggregate_effective_power_proxy_kw"),
             "reference_aggregate_fuel_proxy_kgph": calm_water_metrics.get("reference_aggregate_fuel_proxy_kgph"),
             "resistance_improvement_pct": calm_water_metrics.get("resistance_improvement_pct"),
             "power_improvement_pct": calm_water_metrics.get("power_improvement_pct"),
+            "effective_power_improvement_pct": calm_water_metrics.get("effective_power_improvement_pct"),
             "fuel_improvement_pct": calm_water_metrics.get("fuel_improvement_pct"),
             "dominant_speed_knots": calm_water_metrics.get("dominant_speed_knots"),
             "calm_water_penalty": score_components.get("calm_water_penalty"),

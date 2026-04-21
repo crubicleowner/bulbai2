@@ -43,6 +43,7 @@ class StubEvaluationAdapter:
             calm_water_metrics = self._build_calm_water_metrics(
                 score_components,
                 speeds,
+                geometry_metrics=geometry_metrics,
                 reference_resistance_proxy=reference_resistance_proxy,
                 operational_profile_weights=operational_profile_weights,
             )
@@ -233,6 +234,7 @@ class StubEvaluationAdapter:
             "calm_water_penalty": 0.0,
             "wave_penalty": 0.0,
             "multi_condition_penalty": 0.0,
+            "effective_power_penalty": 0.0,
         }
 
     def _build_wave_response_metrics(
@@ -420,6 +422,7 @@ class StubEvaluationAdapter:
         self,
         score_components: dict[str, float],
         speed_knots: list[float],
+        geometry_metrics: dict[str, float],
         reference_resistance_proxy: float,
         operational_profile_weights: list[float] | None = None,
     ) -> dict[str, float | list[dict[str, float]]]:
@@ -432,28 +435,53 @@ class StubEvaluationAdapter:
         speed_points: list[dict[str, float]] = []
         for speed, speed_weight in zip(normalized_speeds, speed_weights):
             speed_factor = speed / 10.0
+            froude_number = self._build_froude_number(
+                speed,
+                reference_length_m=max(float(geometry_metrics.get("axial_extent_m", 1.0)), 1.0),
+            )
+            wetted_surface_factor = 1.0 + (0.035 * min(speed_factor, 3.0))
+            blockiness_factor = 1.0 + (0.08 * min(resistance_proxy, 1.5))
+            bow_area_factor = 1.0 + (
+                0.04 * min(float(geometry_metrics.get("nose_area_proxy_m2", 0.0)), 4.0)
+            )
+            effective_resistance_factor = (
+                wetted_surface_factor
+                * blockiness_factor
+                * bow_area_factor
+                * (1.0 + (0.2 * froude_number))
+            )
             resistance_at_speed = round(resistance_proxy * (speed_factor**2), 6)
+            effective_resistance_proxy = round(resistance_at_speed * effective_resistance_factor, 6)
             power_proxy_kw = round(resistance_at_speed * speed * 12.5, 6)
+            effective_power_proxy_kw = round(effective_resistance_proxy * speed * 12.5, 6)
             reference_resistance_at_speed = round(reference_resistance_proxy * (speed_factor**2), 6)
             reference_power_proxy_kw = round(reference_resistance_at_speed * speed * 12.5, 6)
+            reference_effective_power_proxy_kw = round(
+                reference_power_proxy_kw * (1.0 + (0.16 * froude_number)),
+                6,
+            )
             fuel_proxy_kgph = self._build_fuel_proxy_kgph(
-                power_proxy_kw,
-                reference_power_proxy_kw,
+                effective_power_proxy_kw,
+                reference_effective_power_proxy_kw,
             )
             reference_fuel_proxy_kgph = self._build_fuel_proxy_kgph(
-                reference_power_proxy_kw,
-                reference_power_proxy_kw,
+                reference_effective_power_proxy_kw,
+                reference_effective_power_proxy_kw,
             )
-            condition_penalty = round(resistance_at_speed + (power_proxy_kw / 1000.0), 6)
+            condition_penalty = round(effective_resistance_proxy + (effective_power_proxy_kw / 1000.0), 6)
             speed_points.append(
                 {
                     "speed_knots": speed,
                     "speed_weight": round(speed_weight, 6),
+                    "froude_number": round(froude_number, 6),
                     "resistance_proxy": resistance_at_speed,
+                    "effective_resistance_proxy": effective_resistance_proxy,
                     "power_proxy_kw": power_proxy_kw,
+                    "effective_power_proxy_kw": effective_power_proxy_kw,
                     "fuel_proxy_kgph": fuel_proxy_kgph,
                     "reference_resistance_proxy": reference_resistance_at_speed,
                     "reference_power_proxy_kw": reference_power_proxy_kw,
+                    "reference_effective_power_proxy_kw": reference_effective_power_proxy_kw,
                     "reference_fuel_proxy_kgph": reference_fuel_proxy_kgph,
                     "resistance_improvement_pct": round(
                         self._relative_improvement(reference_resistance_at_speed, resistance_at_speed), 6
@@ -461,54 +489,84 @@ class StubEvaluationAdapter:
                     "power_improvement_pct": round(
                         self._relative_improvement(reference_power_proxy_kw, power_proxy_kw), 6
                     ),
+                    "effective_power_improvement_pct": round(
+                        self._relative_improvement(reference_effective_power_proxy_kw, effective_power_proxy_kw),
+                        6,
+                    ),
                     "fuel_improvement_pct": round(
                         self._relative_improvement(reference_fuel_proxy_kgph, fuel_proxy_kgph), 6
                     ),
+                    "surrogate_components": {
+                        "wetted_surface_factor": round(wetted_surface_factor, 6),
+                        "blockiness_factor": round(blockiness_factor, 6),
+                        "bow_area_factor": round(bow_area_factor, 6),
+                        "effective_resistance_factor": round(effective_resistance_factor, 6),
+                    },
                     "condition_penalty": condition_penalty,
                 }
             )
 
         mean_resistance = sum(item["resistance_proxy"] for item in speed_points) / max(len(speed_points), 1)
         mean_power = sum(item["power_proxy_kw"] for item in speed_points) / max(len(speed_points), 1)
+        mean_effective_power = sum(item["effective_power_proxy_kw"] for item in speed_points) / max(len(speed_points), 1)
         mean_fuel = sum(item["fuel_proxy_kgph"] for item in speed_points) / max(len(speed_points), 1)
+        mean_froude = sum(item["froude_number"] for item in speed_points) / max(len(speed_points), 1)
         mean_reference_power = sum(item["reference_power_proxy_kw"] for item in speed_points) / max(len(speed_points), 1)
+        mean_reference_effective_power = sum(
+            item["reference_effective_power_proxy_kw"] for item in speed_points
+        ) / max(len(speed_points), 1)
         mean_reference_fuel = sum(item["reference_fuel_proxy_kgph"] for item in speed_points) / max(len(speed_points), 1)
         aggregate_resistance = sum(item["resistance_proxy"] * item["speed_weight"] for item in speed_points)
         aggregate_power = sum(item["power_proxy_kw"] * item["speed_weight"] for item in speed_points)
+        aggregate_effective_power = sum(item["effective_power_proxy_kw"] * item["speed_weight"] for item in speed_points)
         aggregate_fuel = sum(item["fuel_proxy_kgph"] * item["speed_weight"] for item in speed_points)
         reference_aggregate_resistance = sum(
             item["reference_resistance_proxy"] * item["speed_weight"] for item in speed_points
         )
         reference_aggregate_power = sum(item["reference_power_proxy_kw"] * item["speed_weight"] for item in speed_points)
+        reference_aggregate_effective_power = sum(
+            item["reference_effective_power_proxy_kw"] * item["speed_weight"] for item in speed_points
+        )
         reference_aggregate_fuel = sum(item["reference_fuel_proxy_kgph"] * item["speed_weight"] for item in speed_points)
         calm_water_penalty = round(sum(item["condition_penalty"] * item["speed_weight"] for item in speed_points), 6)
         dominant_speed = max(speed_points, key=lambda item: item["speed_weight"])["speed_knots"] if speed_points else 0.0
         max_penalty = max((item["condition_penalty"] for item in speed_points), default=0.0)
         min_penalty = min((item["condition_penalty"] for item in speed_points), default=1e-6)
         speed_balance_ratio = round(max_penalty / max(min_penalty, 1e-6), 6)
+        score_components["effective_power_penalty"] = round(aggregate_effective_power / 1000.0, 6)
         return {
+            "surrogate_model": "enhanced_geometry_v1",
             "speed_points": speed_points,
             "speed_count": len(speed_points),
             "speed_knots": normalized_speeds,
             "operational_profile_weights": [round(weight, 6) for weight in speed_weights],
             "profile_source": profile_source,
             "speed_balance_ratio": speed_balance_ratio,
+            "mean_froude_number": round(mean_froude, 6),
             "mean_resistance_proxy": round(mean_resistance, 6),
             "mean_power_proxy_kw": round(mean_power, 6),
+            "mean_effective_power_proxy_kw": round(mean_effective_power, 6),
             "mean_fuel_proxy_kgph": round(mean_fuel, 6),
             "reference_mean_power_proxy_kw": round(mean_reference_power, 6),
+            "reference_mean_effective_power_proxy_kw": round(mean_reference_effective_power, 6),
             "reference_mean_fuel_proxy_kgph": round(mean_reference_fuel, 6),
             "aggregate_resistance_proxy": round(aggregate_resistance, 6),
             "aggregate_power_proxy_kw": round(aggregate_power, 6),
+            "aggregate_effective_power_proxy_kw": round(aggregate_effective_power, 6),
             "aggregate_fuel_proxy_kgph": round(aggregate_fuel, 6),
             "reference_aggregate_resistance_proxy": round(reference_aggregate_resistance, 6),
             "reference_aggregate_power_proxy_kw": round(reference_aggregate_power, 6),
+            "reference_aggregate_effective_power_proxy_kw": round(reference_aggregate_effective_power, 6),
             "reference_aggregate_fuel_proxy_kgph": round(reference_aggregate_fuel, 6),
             "resistance_improvement_pct": round(
                 self._relative_improvement(reference_aggregate_resistance, aggregate_resistance), 6
             ),
             "power_improvement_pct": round(
                 self._relative_improvement(reference_aggregate_power, aggregate_power), 6
+            ),
+            "effective_power_improvement_pct": round(
+                self._relative_improvement(reference_aggregate_effective_power, aggregate_effective_power),
+                6,
             ),
             "fuel_improvement_pct": round(
                 self._relative_improvement(reference_aggregate_fuel, aggregate_fuel), 6
@@ -641,6 +699,10 @@ class StubEvaluationAdapter:
         load_ratio = power_proxy_kw / max(reference_power_proxy_kw, 1e-6)
         specific_fuel_consumption = self._specific_fuel_consumption_kg_per_kwh(load_ratio)
         return round(power_proxy_kw * specific_fuel_consumption, 6)
+
+    def _build_froude_number(self, speed_knots: float, reference_length_m: float) -> float:
+        speed_ms = float(speed_knots) * 0.514444
+        return speed_ms / max((9.81 * max(reference_length_m, 1e-6)) ** 0.5, 1e-6)
 
     def _specific_fuel_consumption_kg_per_kwh(self, load_ratio: float) -> float:
         normalized_ratio = min(max(float(load_ratio), 0.35), 1.1)

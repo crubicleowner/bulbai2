@@ -60,6 +60,10 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert case_payload["summary_metrics"]["calm_water"]["aggregate_power_proxy_kw"] > 0.0
     assert case_payload["summary_metrics"]["calm_water"]["mean_fuel_proxy_kgph"] > 0.0
     assert case_payload["summary_metrics"]["calm_water"]["aggregate_fuel_proxy_kgph"] > 0.0
+    assert case_payload["summary_metrics"]["calm_water"]["surrogate_model"] == "enhanced_geometry_v1"
+    assert case_payload["summary_metrics"]["calm_water"]["mean_froude_number"] > 0.0
+    assert case_payload["summary_metrics"]["calm_water"]["mean_effective_power_proxy_kw"] > 0.0
+    assert "effective_power_improvement_pct" in case_payload["summary_metrics"]["calm_water"]
     assert case_payload["summary_metrics"]["calm_water"]["aggregate_resistance_proxy"] > 0.0
     assert case_payload["summary_metrics"]["calm_water"]["reference_aggregate_fuel_proxy_kgph"] > 0.0
     assert "resistance_improvement_pct" in case_payload["summary_metrics"]["calm_water"]
@@ -83,6 +87,8 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert case_payload["summary_metrics"]["high_fidelity_boundary"]["adapter"] == "openfoam"
     assert case_payload["summary_metrics"]["high_fidelity_boundary"]["available"] is False
     assert case_payload["summary_metrics"]["high_fidelity_boundary"]["used"] is False
+    assert case_payload["summary_metrics"]["high_fidelity_boundary"]["case_built"] is True
+    assert case_payload["summary_metrics"]["high_fidelity_boundary"]["case_directory"].endswith("working\\openfoam_case")
     assert metadata_payload["create_case_command"]["candidate_count"] == 3
     assert metadata_payload["create_case_command"]["speed_knots"] == [18.0, 20.0]
     assert metadata_payload["create_case_command"]["operational_profile_weights"] is None
@@ -136,7 +142,9 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert evaluation_index[0]["hydrostatics_metrics"]["volume_delta_pct"] >= 0.0
     assert evaluation_index[0]["hydrostatics_metrics"]["constraint_status"] in {"ok", "warn"}
     assert len(evaluation_index[0]["calm_water_metrics"]["speed_points"]) == 2
+    assert evaluation_index[0]["calm_water_metrics"]["speed_points"][0]["froude_number"] > 0.0
     assert evaluation_index[0]["calm_water_metrics"]["mean_power_proxy_kw"] > 0.0
+    assert evaluation_index[0]["calm_water_metrics"]["mean_effective_power_proxy_kw"] > 0.0
     assert evaluation_index[0]["calm_water_metrics"]["aggregate_power_proxy_kw"] > 0.0
     assert evaluation_index[0]["calm_water_metrics"]["mean_fuel_proxy_kgph"] > 0.0
     assert evaluation_index[0]["calm_water_metrics"]["aggregate_fuel_proxy_kgph"] > 0.0
@@ -167,6 +175,7 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert "Calm-water surrogate" in report_html
     assert "Mean power proxy" in report_html
     assert "Aggregate power proxy" in report_html
+    assert "Effective power proxy" in report_html
     assert "Mean fuel proxy" in report_html
     assert "Aggregate fuel proxy" in report_html
     assert "Fuel improvement" in report_html
@@ -185,6 +194,8 @@ def test_run_vertical_slice_creates_case_candidates_and_report(tmp_path: Path) -
     assert "wave=" in report_html
     assert "Optimization trace" in report_html
     assert "High-fidelity boundary" in report_html
+    assert "OpenFOAM case directory" in report_html
+    assert "Surrogate model" in report_html
     assert "vs" in case_payload["summary_metrics"]["optimization_trace"]["rows"][0]
     assert "hydro=" in case_payload["summary_metrics"]["optimization_trace"]["rows"][0]
     assert "wave=" in case_payload["summary_metrics"]["optimization_trace"]["rows"][0]

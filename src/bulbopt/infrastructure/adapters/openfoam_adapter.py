@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 import shutil
 
 
@@ -21,6 +23,107 @@ class OpenFOAMAdapter:
             "used": False,
             "mode": "optional",
         }
+
+    def build_case(
+        self,
+        case_dir: Path,
+        *,
+        best_candidate_id: str,
+        best_candidate_geometry_path: Path,
+    ) -> dict[str, bool | str]:
+        openfoam_case_dir = case_dir / "working" / "openfoam_case"
+        tri_surface_dir = openfoam_case_dir / "constant" / "triSurface"
+        system_dir = openfoam_case_dir / "system"
+        constant_dir = openfoam_case_dir / "constant"
+        tri_surface_dir.mkdir(parents=True, exist_ok=True)
+        system_dir.mkdir(parents=True, exist_ok=True)
+        constant_dir.mkdir(parents=True, exist_ok=True)
+
+        target_stl = tri_surface_dir / "best_candidate.stl"
+        shutil.copyfile(best_candidate_geometry_path, target_stl)
+
+        (system_dir / "controlDict").write_text(self._control_dict(), encoding="utf-8")
+        (system_dir / "fvSchemes").write_text(self._fv_schemes(), encoding="utf-8")
+        (system_dir / "fvSolution").write_text(self._fv_solution(), encoding="utf-8")
+        (constant_dir / "transportProperties").write_text(self._transport_properties(), encoding="utf-8")
+
+        manifest = {
+            "adapter": "openfoam",
+            "available": self.is_available(),
+            "used": False,
+            "mode": "optional",
+            "case_built": True,
+            "best_candidate_id": best_candidate_id,
+            "case_directory": str(openfoam_case_dir),
+            "geometry_path": str(target_stl),
+        }
+        (openfoam_case_dir / "openfoam_case_manifest.json").write_text(
+            json.dumps(manifest, indent=2),
+            encoding="utf-8",
+        )
+        return manifest
+
+    def _control_dict(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       dictionary;\n"
+            "    object      controlDict;\n"
+            "}\n"
+            "application     interFoam;\n"
+            "startFrom       latestTime;\n"
+            "stopAt          endTime;\n"
+            "endTime         200;\n"
+            "deltaT          0.5;\n"
+        )
+
+    def _fv_schemes(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       dictionary;\n"
+            "    object      fvSchemes;\n"
+            "}\n"
+            "ddtSchemes\n"
+            "{\n"
+            "    default         Euler;\n"
+            "}\n"
+        )
+
+    def _fv_solution(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       dictionary;\n"
+            "    object      fvSolution;\n"
+            "}\n"
+            "solvers\n"
+            "{\n"
+            "    p_rgh\n"
+            "    {\n"
+            "        solver          PCG;\n"
+            "    }\n"
+            "}\n"
+        )
+
+    def _transport_properties(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       dictionary;\n"
+            "    object      transportProperties;\n"
+            "}\n"
+            "transportModel  Newtonian;\n"
+            "nu              1e-06;\n"
+        )
 
 
 def detect_openfoam_available() -> bool:
