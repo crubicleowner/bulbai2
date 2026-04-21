@@ -613,6 +613,42 @@ def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, mon
         app.processEvents()
 
 
+def test_case_wizard_exposes_bulb_region_override_fields(tmp_path: Path, monkeypatch) -> None:
+    """Spec §11.2: the engineer confirms or adjusts the auto-detected bulb
+    region. The wizard exposes axis_min/axis_max override fields that flow
+    into the CreateCaseCommand when filled, and stay None when blank.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    app = QApplication.instance() or QApplication([])
+    wizard = CaseWizard()
+    try:
+        min_input = wizard.findChild(QLineEdit, "bulb_region_axis_min_override_input")
+        max_input = wizard.findChild(QLineEdit, "bulb_region_axis_max_override_input")
+        assert min_input is not None
+        assert max_input is not None
+
+        # Blank inputs produce None overrides (pipeline falls back to auto-detection).
+        payload = wizard.payload()
+        assert payload["bulb_region_axis_min_override"] is None
+        assert payload["bulb_region_axis_max_override"] is None
+
+        # Numeric input flows through.
+        min_input.setText("1.25")
+        max_input.setText("2.5")
+        payload = wizard.payload()
+        assert payload["bulb_region_axis_min_override"] == 1.25
+        assert payload["bulb_region_axis_max_override"] == 2.5
+
+        # Garbage input is treated as no override instead of raising.
+        min_input.setText("not-a-number")
+        payload = wizard.payload()
+        assert payload["bulb_region_axis_min_override"] is None
+    finally:
+        wizard.close()
+        app.processEvents()
+
+
 def test_case_wizard_exposes_optimization_mode_selector(tmp_path: Path, monkeypatch) -> None:
     """Spec §11.3/§11.4: the engineer chooses between generate_new_bulb and
     local_optimize; the wizard's payload must reflect the selection.

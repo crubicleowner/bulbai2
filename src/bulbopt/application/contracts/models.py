@@ -36,6 +36,8 @@ class CreateCaseCommand:
     reject_draft_delta_m: float = 0.1
     reject_speed_balance_ratio: float = 8.0
     reject_wave_penalty: float = 3.0
+    bulb_region_axis_min_override: float | None = None
+    bulb_region_axis_max_override: float | None = None
 
 
 @dataclass(slots=True)

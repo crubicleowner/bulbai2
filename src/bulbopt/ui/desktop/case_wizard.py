@@ -58,6 +58,8 @@ def default_case_payload() -> dict[str, object]:
         "reject_draft_delta_m": 0.1,
         "reject_speed_balance_ratio": 8.0,
         "reject_wave_penalty": 3.0,
+        "bulb_region_axis_min_override": None,
+        "bulb_region_axis_max_override": None,
     }
 
 
@@ -174,6 +176,16 @@ class CaseWizard(QWidget):
             float(payload["reject_wave_penalty"]),
             "reject_wave_penalty_input",
         )
+        self._bulb_region_axis_min_override_input = QLineEdit("", self)
+        self._bulb_region_axis_min_override_input.setObjectName("bulb_region_axis_min_override_input")
+        self._bulb_region_axis_min_override_input.setPlaceholderText(
+            "optional: override auto-detected axis_min"
+        )
+        self._bulb_region_axis_max_override_input = QLineEdit("", self)
+        self._bulb_region_axis_max_override_input.setObjectName("bulb_region_axis_max_override_input")
+        self._bulb_region_axis_max_override_input.setPlaceholderText(
+            "optional: override auto-detected axis_max"
+        )
 
         form_layout = QFormLayout()
         form_layout.addRow("Optimization mode", self._optimization_mode_combo)
@@ -206,6 +218,8 @@ class CaseWizard(QWidget):
         form_layout.addRow("Reject draft delta (m)", self._reject_draft_delta_m_input)
         form_layout.addRow("Reject speed balance", self._reject_speed_balance_ratio_input)
         form_layout.addRow("Reject wave penalty", self._reject_wave_penalty_input)
+        form_layout.addRow("Bulb axis_min override", self._bulb_region_axis_min_override_input)
+        form_layout.addRow("Bulb axis_max override", self._bulb_region_axis_max_override_input)
         layout.addLayout(form_layout)
 
         source_path = self._source_path_input.text() or "Not found"
@@ -258,6 +272,12 @@ class CaseWizard(QWidget):
             "reject_draft_delta_m": self._reject_draft_delta_m_input.value(),
             "reject_speed_balance_ratio": self._reject_speed_balance_ratio_input.value(),
             "reject_wave_penalty": self._reject_wave_penalty_input.value(),
+            "bulb_region_axis_min_override": self._parse_optional_float(
+                self._bulb_region_axis_min_override_input.text()
+            ),
+            "bulb_region_axis_max_override": self._parse_optional_float(
+                self._bulb_region_axis_max_override_input.text()
+            ),
         }
 
     def _sync_source_label(self, value: str) -> None:
@@ -295,3 +315,12 @@ class CaseWizard(QWidget):
         except ValueError:
             return None
         return values or None
+
+    def _parse_optional_float(self, raw_value: str) -> float | None:
+        stripped = raw_value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None

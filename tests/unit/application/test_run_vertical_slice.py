@@ -1124,6 +1124,41 @@ def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Pat
     assert "Repair status: not_needed" in report_html
     assert "Watertight before: True" in report_html
     assert "Watertight after: True" in report_html
+    # Spec §11.2 + §14: bulb region confirmation is always surfaced so
+    # engineers can see whether they reviewed the auto-detected area.
+    assert "Bulb region" in report_html
+    assert "Confirmation source: auto_detected" in report_html
+
+
+def test_run_vertical_slice_applies_bulb_region_override_from_command(tmp_path: Path) -> None:
+    """Spec §11.2: the user confirms or adjusts the auto-detected bulb area.
+    When ``bulb_region_axis_min_override`` is set, the pipeline stores the
+    confirmed value while preserving ``auto_axis_min`` for the report.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="confirm-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+            bulb_region_axis_min_override=1.5,
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    analysis = json.loads(
+        (case_dir / "working" / "repaired" / "geometry_analysis.json").read_text(encoding="utf-8")
+    )
+    assert analysis["bulb_region"]["axis_min"] == pytest.approx(1.5)
+    assert analysis["bulb_region"]["confirmation_source"] == "user_override"
+    assert "auto_axis_min" in analysis["bulb_region"]
 
 
 def test_run_vertical_slice_local_optimize_mode_completes_and_marks_candidates(

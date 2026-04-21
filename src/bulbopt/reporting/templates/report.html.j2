@@ -20,6 +20,15 @@
     <p>Vertices (before → after): {{ repair_summary.vertices_count_before }} → {{ repair_summary.vertices_count }}</p>
     <p>Faces (before → after): {{ repair_summary.faces_count_before }} → {{ repair_summary.faces_count }}</p>
     {% endif %}
+    {% if bulb_region_summary %}
+    <h2>Bulb region</h2>
+    <p>Confirmation source: {{ bulb_region_summary.confirmation_source }}</p>
+    <p>Primary axis: {{ bulb_region_summary.axis_index }}</p>
+    <p>Auto-detected axis_min: {{ bulb_region_summary.auto_axis_min }}</p>
+    <p>Confirmed axis_min: {{ bulb_region_summary.axis_min }}</p>
+    <p>Confirmed axis_max: {{ bulb_region_summary.axis_max }}</p>
+    <p>Mask ratio: {{ bulb_region_summary.mask_ratio }}</p>
+    {% endif %}
     {% if objective_weights %}
     <h2>Objective weights</h2>
     <p>Resistance weight: {{ objective_weights.resistance_weight }}</p>

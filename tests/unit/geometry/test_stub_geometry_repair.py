@@ -26,6 +26,12 @@ def _make_case_dir(tmp_path: Path) -> Path:
     return repository.create_case(case)
 
 
+def _make_case_dir_with_id(tmp_path: Path, case_id: str) -> Path:
+    repository = FilesystemProjectRepository(root_dir=tmp_path / "projects")
+    case = OptimizationCase.new(case_id=case_id, case_name=case_id)
+    return repository.create_case(case)
+
+
 def _write_watertight_stl(path: Path) -> trimesh.Trimesh:
     mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
     assert mesh.is_watertight
@@ -99,6 +105,56 @@ def test_prepare_geometry_records_repair_artifact_in_quality_report(tmp_path: Pa
     assert payload["quality_report"]["watertight"] is True
     assert payload["quality_report"]["watertight_before"] is False
     assert payload["quality_report"]["repair_status"] == "repaired"
+
+
+def test_prepare_geometry_accepts_user_bulb_region_override(tmp_path: Path) -> None:
+    """Spec §11.2: the engineer must be able to review and *adjust* the
+    auto-detected bulb area. ``bulb_region_override`` lets the UI pass a
+    manual axis_min; the stored analysis preserves both the auto-detected
+    value and the confirmed one so the report is engineering-honest.
+    """
+    case_dir = _make_case_dir(tmp_path)
+    source_path = tmp_path / "demo.stl"
+    _write_watertight_stl(source_path)
+
+    adapter = StubGeometryAdapter()
+
+    # First run: observe auto-detected axis_min.
+    auto_analysis = adapter.prepare_geometry(case_dir, source_path)
+    auto_axis_min = float(auto_analysis["bulb_region"]["axis_min"])
+    auto_axis_max = float(auto_analysis["bulb_region"]["axis_max"])
+    override_axis_min = auto_axis_min - 0.1
+
+    # Second run on a fresh case: pass an override that differs from auto.
+    case_dir_2 = _make_case_dir_with_id(tmp_path, "case-override")
+    source_path_2 = tmp_path / "demo2.stl"
+    _write_watertight_stl(source_path_2)
+
+    analysis = adapter.prepare_geometry(
+        case_dir_2,
+        source_path_2,
+        bulb_region_override={"axis_min": override_axis_min},
+    )
+
+    bulb_region = analysis["bulb_region"]
+    assert bulb_region["axis_min"] == pytest.approx(override_axis_min)
+    # axis_max is preserved (the engineer only adjusted the aft limit).
+    assert bulb_region["axis_max"] == pytest.approx(auto_axis_max, rel=1e-6)
+    # Auto-detected value stays visible for the report.
+    assert bulb_region["auto_axis_min"] == pytest.approx(auto_axis_min, rel=1e-6)
+    assert bulb_region["confirmation_source"] == "user_override"
+
+
+def test_prepare_geometry_defaults_confirmation_source_to_auto(tmp_path: Path) -> None:
+    case_dir = _make_case_dir(tmp_path)
+    source_path = tmp_path / "demo.stl"
+    _write_watertight_stl(source_path)
+
+    adapter = StubGeometryAdapter()
+    analysis = adapter.prepare_geometry(case_dir, source_path)
+
+    assert analysis["bulb_region"]["confirmation_source"] == "auto_detected"
+    assert "auto_axis_min" in analysis["bulb_region"]
 
 
 def test_generate_candidates_local_optimize_uses_smaller_deformations(tmp_path: Path) -> None:

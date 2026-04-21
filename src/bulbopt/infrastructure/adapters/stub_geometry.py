@@ -13,7 +13,12 @@ class StubGeometryAdapter:
     def __init__(self, json_store: JsonStore | None = None) -> None:
         self._json_store = json_store or JsonStore()
 
-    def prepare_geometry(self, case_dir: Path, source_path: Path) -> dict:
+    def prepare_geometry(
+        self,
+        case_dir: Path,
+        source_path: Path,
+        bulb_region_override: dict[str, float] | None = None,
+    ) -> dict:
         source_bytes = source_path.read_bytes()
         input_copy_path = case_dir / "input" / source_path.name
         input_copy_path.write_bytes(source_bytes)
@@ -50,6 +55,7 @@ class StubGeometryAdapter:
             before_stats=before_stats,
             repaired=repaired,
             repair_status=repair_status,
+            bulb_region_override=bulb_region_override,
         )
         self._json_store.write(case_dir / "working" / "repaired" / "geometry_analysis.json", analysis)
         self._update_artifacts_index(
@@ -120,6 +126,7 @@ class StubGeometryAdapter:
         before_stats: dict[str, int | bool] | None = None,
         repaired: bool = False,
         repair_status: str = "not_needed",
+        bulb_region_override: dict[str, float] | None = None,
     ) -> dict:
         bounds = mesh.bounds.astype(float)
         extents = mesh.extents.astype(float)
@@ -128,8 +135,22 @@ class StubGeometryAdapter:
         axis_min = float(axis_values.min())
         axis_max = float(axis_values.max())
         region_depth = max(float(extents[primary_axis]) * 0.15, 1e-6)
-        bulb_region_min = axis_max - region_depth
-        mask_ratio = float(np.mean(axis_values >= bulb_region_min))
+        auto_axis_min = axis_max - region_depth
+
+        # Apply user override while preserving the auto-detected value for the
+        # report (spec §11.2 + §14 engineering-honest reporting).
+        confirmed_axis_min = auto_axis_min
+        confirmed_axis_max = axis_max
+        confirmation_source = "auto_detected"
+        if bulb_region_override:
+            if "axis_min" in bulb_region_override and bulb_region_override["axis_min"] is not None:
+                confirmed_axis_min = float(bulb_region_override["axis_min"])
+                confirmation_source = "user_override"
+            if "axis_max" in bulb_region_override and bulb_region_override["axis_max"] is not None:
+                confirmed_axis_max = float(bulb_region_override["axis_max"])
+                confirmation_source = "user_override"
+
+        mask_ratio = float(np.mean(axis_values >= confirmed_axis_min))
 
         volume = 0.0
         if mesh.is_volume:
@@ -160,9 +181,12 @@ class StubGeometryAdapter:
             "repaired_path": str(repaired_path),
             "bulb_region": {
                 "axis_index": primary_axis,
-                "axis_min": bulb_region_min,
-                "axis_max": axis_max,
+                "axis_min": confirmed_axis_min,
+                "axis_max": confirmed_axis_max,
                 "mask_ratio": mask_ratio,
+                "auto_axis_min": auto_axis_min,
+                "auto_axis_max": axis_max,
+                "confirmation_source": confirmation_source,
             },
         }
 

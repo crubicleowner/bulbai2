@@ -91,6 +91,8 @@ def test_repository_persists_create_case_metadata(tmp_path: Path) -> None:
             "reject_draft_delta_m": 0.1,
             "reject_speed_balance_ratio": 8.0,
             "reject_wave_penalty": 3.0,
+            "bulb_region_axis_min_override": None,
+            "bulb_region_axis_max_override": None,
         }
     }
 

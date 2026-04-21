@@ -63,10 +63,21 @@ def _execute_slice(
     )
 
     try:
+        bulb_region_override = {}
+        if command.bulb_region_axis_min_override is not None:
+            bulb_region_override["axis_min"] = command.bulb_region_axis_min_override
+        if command.bulb_region_axis_max_override is not None:
+            bulb_region_override["axis_max"] = command.bulb_region_axis_max_override
+        bulb_region_override = bulb_region_override or None
+
         geometry_analysis = worker.run_strict(
             case.case_id,
             "prepare_geometry",
-            lambda: geometry.prepare_geometry(case_dir, Path(command.source_path)),
+            lambda: geometry.prepare_geometry(
+                case_dir,
+                Path(command.source_path),
+                bulb_region_override=bulb_region_override,
+            ),
             resume=resume,
         )
         candidates = worker.run_strict(
@@ -190,6 +201,7 @@ def _execute_slice(
                     "acceptability_thresholds": acceptability_thresholds,
                     "optimization_trace": optimization_trace,
                     "repair_summary": _repair_summary_payload(geometry_analysis),
+                    "bulb_region_summary": _bulb_region_summary_payload(geometry_analysis),
                     "operational_profile_summary": best_candidate.get("calm_water_metrics", {}),
                     "calm_water_summary": best_candidate.get("calm_water_metrics", {}),
                     "wave_response_summary": best_candidate.get("wave_response_metrics", {}),
@@ -441,6 +453,19 @@ def _normalized_candidate(candidate: dict) -> dict:
     normalized = dict(candidate)
     normalized["acceptability"] = _normalized_acceptability(candidate)
     return normalized
+
+
+def _bulb_region_summary_payload(geometry_analysis: dict) -> dict:
+    bulb_region = geometry_analysis.get("bulb_region", {})
+    return {
+        "axis_index": bulb_region.get("axis_index"),
+        "axis_min": bulb_region.get("axis_min"),
+        "axis_max": bulb_region.get("axis_max"),
+        "auto_axis_min": bulb_region.get("auto_axis_min"),
+        "auto_axis_max": bulb_region.get("auto_axis_max"),
+        "confirmation_source": bulb_region.get("confirmation_source", "auto_detected"),
+        "mask_ratio": bulb_region.get("mask_ratio"),
+    }
 
 
 def _repair_summary_payload(geometry_analysis: dict) -> dict:
