@@ -1134,6 +1134,44 @@ def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Pat
     assert "Best candidate axial extent" in report_html
 
 
+def test_run_vertical_slice_writes_jsonl_case_log(tmp_path: Path) -> None:
+    """Spec §9: every case folder must contain logs/case.log. The pipeline
+    writes one JSONL entry per stage transition (started / completed) plus
+    pipeline started + pipeline completed markers.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="logs-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    log_path = case_dir / "logs" / "case.log"
+    assert log_path.exists()
+    lines = [line for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    entries = [json.loads(line) for line in lines]
+    assert entries, "Expected at least one log entry"
+    # Pipeline brackets:
+    assert entries[0]["stage"] == "pipeline"
+    assert entries[0]["status"] == "started"
+    assert entries[-1]["stage"] == "pipeline"
+    assert entries[-1]["status"] in {"completed", "completed_with_warnings"}
+    stages_logged = {entry["stage"] for entry in entries}
+    assert {"prepare_geometry", "generate_candidates", "evaluate_candidates"}.issubset(
+        stages_logged
+    )
+
+
 def test_run_vertical_slice_records_per_stage_timing_in_summary_metrics(tmp_path: Path) -> None:
     """Observability: after a successful run, case.summary_metrics.timing
     contains per-stage elapsed_seconds aggregated from working/checkpoints,

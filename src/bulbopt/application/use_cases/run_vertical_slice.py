@@ -6,6 +6,7 @@ from bulbopt.application.contracts.models import CaseSummary, CreateCaseCommand
 from bulbopt.application.use_cases.create_case import create_case
 from bulbopt.domain.core.models import CaseStatus
 from bulbopt.execution.checkpoints.file_checkpoint_store import FileCheckpointStore
+from bulbopt.execution.logging.case_logger import CaseLogger
 from bulbopt.execution.worker.local_worker import LocalWorker
 from bulbopt.infrastructure.adapters.case_package_exporter import CasePackageExporter
 from bulbopt.infrastructure.adapters.html_report import HtmlReportAdapter
@@ -62,6 +63,27 @@ def _execute_slice(
     worker = LocalWorker(
         checkpoint_store=FileCheckpointStore(root_dir=case_dir / "working" / "checkpoints"),
     )
+    case_logger = CaseLogger(case_dir / "logs" / "case.log")
+    case_logger.log_stage(
+        stage="pipeline",
+        status="resumed" if resume else "started",
+        extra={"case_id": case.case_id, "optimization_mode": command.optimization_mode},
+    )
+
+    def _tracked(stage_name: str, job):
+        case_logger.log_stage(stage=stage_name, status="started")
+        try:
+            result = worker.run_strict(case.case_id, stage_name, job, resume=resume)
+        except Exception as exc:
+            case_logger.log_stage(
+                stage=stage_name,
+                status="failed",
+                extra={"error": str(exc), "is_recoverable": True},
+            )
+            raise
+        elapsed = _read_stage_elapsed(case_dir, case.case_id, stage_name)
+        case_logger.log_stage(stage=stage_name, status="completed", elapsed_seconds=elapsed)
+        return result
 
     try:
         bulb_region_override = {}
@@ -71,25 +93,21 @@ def _execute_slice(
             bulb_region_override["axis_max"] = command.bulb_region_axis_max_override
         bulb_region_override = bulb_region_override or None
 
-        geometry_analysis = worker.run_strict(
-            case.case_id,
+        geometry_analysis = _tracked(
             "prepare_geometry",
             lambda: geometry.prepare_geometry(
                 case_dir,
                 Path(command.source_path),
                 bulb_region_override=bulb_region_override,
             ),
-            resume=resume,
         )
-        candidates = worker.run_strict(
-            case.case_id,
+        candidates = _tracked(
             "generate_candidates",
             lambda: geometry.generate_candidates(
                 case_dir,
                 count=command.candidate_count,
                 optimization_mode=command.optimization_mode,
             ),
-            resume=resume,
         )
         repository.save_candidate_index(case.case_id, candidates)
 
@@ -111,8 +129,7 @@ def _execute_slice(
             "reject_speed_balance_ratio": command.reject_speed_balance_ratio,
             "reject_wave_penalty": command.reject_wave_penalty,
         }
-        evaluated_candidates = worker.run_strict(
-            case.case_id,
+        evaluated_candidates = _tracked(
             "evaluate_candidates",
             lambda: evaluation.evaluate_candidates(
                 candidates,
@@ -126,38 +143,31 @@ def _execute_slice(
                 wave_scenario_weights=command.wave_scenario_weights,
                 acceptability_thresholds=acceptability_thresholds,
             ),
-            resume=resume,
         )
         evaluated_candidates = [_normalized_candidate(candidate) for candidate in evaluated_candidates]
         json_store.write(case_dir / "evaluation_index.json", evaluated_candidates)
-        ranked_candidates = worker.run_strict(
-            case.case_id,
+        ranked_candidates = _tracked(
             "rank_candidates",
             lambda: optimization.rank_candidates(evaluated_candidates),
-            resume=resume,
         )
         best_candidate = ranked_candidates[0]
         optimization_summary = optimization.summarize_ranking(evaluated_candidates)
         optimization_trace = optimization.build_trace(evaluated_candidates)
-        high_fidelity_boundary = worker.run_strict(
-            case.case_id,
+        high_fidelity_boundary = _tracked(
             "openfoam_build_case",
             lambda: openfoam.build_case(
                 case_dir,
                 best_candidate_id=best_candidate["candidate_id"],
                 best_candidate_geometry_path=Path(best_candidate["geometry_path"]),
             ),
-            resume=resume,
         )
-        runner_summary = worker.run_strict(
-            case.case_id,
+        runner_summary = _tracked(
             "openfoam_run_case",
             lambda: openfoam_runner.run_case(
                 case_dir / "working" / "openfoam_case",
                 case_manifest=high_fidelity_boundary,
                 execute=True,
             ),
-            resume=resume,
         )
         high_fidelity_boundary.update(runner_summary)
         optimization_summary_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
@@ -185,11 +195,9 @@ def _execute_slice(
         )
         case.status = CaseStatus.ASSEMBLING_RESULTS
         repository.save_case(case)
-        worker.run_strict(
-            case.case_id,
+        _tracked(
             "build_html_report",
-            resume=resume,
-            job=lambda: str(report.build_html_report(
+            lambda: str(report.build_html_report(
                 case_dir,
                 {
                     "case_name": case.case_name,
@@ -223,8 +231,7 @@ def _execute_slice(
                 },
             )),
         )
-        archive_path = worker.run_strict(
-            case.case_id,
+        archive_path = _tracked(
             "export_case_package",
             lambda: str(
                 CasePackageExporter().export(
@@ -232,7 +239,6 @@ def _execute_slice(
                     case_dir / "outputs" / "packages",
                 )
             ),
-            resume=resume,
         )
         artifacts_index = json_store.read(artifacts_index_path)
         artifacts_index["case_package"] = archive_path
@@ -245,10 +251,20 @@ def _execute_slice(
         case.status = _final_case_status(best_candidate)
         case.is_recoverable = False
         repository.save_case(case)
-    except Exception:
+        case_logger.log_stage(
+            stage="pipeline",
+            status=case.status.value,
+            extra={"best_candidate_id": best_candidate["candidate_id"]},
+        )
+    except Exception as exc:
         case.status = CaseStatus.FAILED
         case.is_recoverable = True
         repository.save_case(case)
+        case_logger.log_stage(
+            stage="pipeline",
+            status="failed",
+            extra={"error": str(exc), "is_recoverable": True},
+        )
         raise
 
     return CaseSummary(
@@ -268,6 +284,28 @@ def _final_case_status(best_candidate: dict) -> CaseStatus:
     if acceptability.get("level") in {"warn", "reject"}:
         return CaseStatus.COMPLETED_WITH_WARNINGS
     return CaseStatus.COMPLETED
+
+
+def _read_stage_elapsed(case_dir: Path, case_id: str, stage_name: str) -> float | None:
+    """Return the last-written elapsed_seconds for a stage, or None if absent."""
+    import json as _json
+
+    checkpoint_path = case_dir / "working" / "checkpoints" / f"{case_id}-{stage_name}.json"
+    if not checkpoint_path.exists():
+        return None
+    try:
+        payload = _json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("elapsed_seconds")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _read_timing_summary(case_dir: Path, case_id: str) -> dict:
