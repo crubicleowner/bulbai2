@@ -22,6 +22,26 @@ class FileCheckpointStore:
         self.json_store.write(checkpoint_path, payload)
         return checkpoint_path
 
+    def load_completed_result(self, case_id: str, stage_name: str) -> Any | None:
+        """Return the stored ``result`` when a completed checkpoint exists, else ``None``.
+
+        A failed or malformed checkpoint is treated as absent so the caller
+        will re-run the stage — this is the resume-guard expected by spec §10.
+        """
+
+        self._validate_component(case_id, "case_id")
+        self._validate_component(stage_name, "stage_name")
+        checkpoint_path = self.root_dir / f"{case_id}-{stage_name}.json"
+        if not checkpoint_path.exists():
+            return None
+        try:
+            payload = self.json_store.read(checkpoint_path)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(payload, dict) or payload.get("status") != "completed":
+            return None
+        return payload.get("result")
+
     def _validate_component(self, value: str, field_name: str) -> None:
         component_path = Path(value)
         if component_path.is_absolute() or len(component_path.parts) != 1 or component_path.parts[0] in {".", ".."}:

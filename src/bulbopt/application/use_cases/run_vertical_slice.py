@@ -19,10 +19,39 @@ from bulbopt.storage.project_repository.filesystem_repository import FilesystemP
 
 def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSummary:
     repository = FilesystemProjectRepository(root_dir=project_root)
-    json_store = JsonStore()
     case = create_case(command=command, repository=repository)
     case_dir = repository.case_dir(case.case_id)
+    return _execute_slice(repository=repository, case=case, case_dir=case_dir, command=command, resume=False)
 
+
+def resume_vertical_slice(project_root: Path, case_id: str) -> CaseSummary:
+    """Continue a recoverable case using the checkpoints saved by a prior run.
+
+    Implements spec §10 Recovery quality criterion: the engineer must be able
+    to restart the application and continue a case without manual filesystem
+    repair. ``LocalWorker.run_strict(resume=True)`` skips stages whose
+    ``completed`` checkpoints are intact and re-executes any failed stage.
+    """
+    repository = FilesystemProjectRepository(root_dir=project_root)
+    case = repository.load_case(case_id)
+    command = repository.load_create_case_command(case_id)
+    case_dir = repository.case_dir(case_id)
+    # Mark the case as re-opened — its final status will be rewritten by _execute_slice.
+    case.is_recoverable = False
+    case.status = CaseStatus.IMPORTED
+    repository.save_case(case)
+    return _execute_slice(repository=repository, case=case, case_dir=case_dir, command=command, resume=True)
+
+
+def _execute_slice(
+    *,
+    repository: FilesystemProjectRepository,
+    case,
+    case_dir: Path,
+    command: CreateCaseCommand,
+    resume: bool,
+) -> CaseSummary:
+    json_store = JsonStore()
     geometry = StubGeometryAdapter()
     evaluation = StubEvaluationAdapter()
     optimization = StubOptimizationAdapter()
@@ -38,11 +67,13 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
             case.case_id,
             "prepare_geometry",
             lambda: geometry.prepare_geometry(case_dir, Path(command.source_path)),
+            resume=resume,
         )
         candidates = worker.run_strict(
             case.case_id,
             "generate_candidates",
             lambda: geometry.generate_candidates(case_dir, count=command.candidate_count),
+            resume=resume,
         )
         repository.save_candidate_index(case.case_id, candidates)
 
@@ -79,6 +110,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 wave_scenario_weights=command.wave_scenario_weights,
                 acceptability_thresholds=acceptability_thresholds,
             ),
+            resume=resume,
         )
         evaluated_candidates = [_normalized_candidate(candidate) for candidate in evaluated_candidates]
         json_store.write(case_dir / "evaluation_index.json", evaluated_candidates)
@@ -86,6 +118,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
             case.case_id,
             "rank_candidates",
             lambda: optimization.rank_candidates(evaluated_candidates),
+            resume=resume,
         )
         best_candidate = ranked_candidates[0]
         optimization_summary = optimization.summarize_ranking(evaluated_candidates)
@@ -98,6 +131,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 best_candidate_id=best_candidate["candidate_id"],
                 best_candidate_geometry_path=Path(best_candidate["geometry_path"]),
             ),
+            resume=resume,
         )
         runner_summary = worker.run_strict(
             case.case_id,
@@ -106,6 +140,7 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
                 case_dir / "working" / "openfoam_case",
                 case_manifest=high_fidelity_boundary,
             ),
+            resume=resume,
         )
         high_fidelity_boundary.update(runner_summary)
         optimization_summary_path = case_dir / "working" / "evaluation" / "optimization_summary.json"
@@ -134,7 +169,8 @@ def run_vertical_slice(project_root: Path, command: CreateCaseCommand) -> CaseSu
         worker.run_strict(
             case.case_id,
             "build_html_report",
-            lambda: str(report.build_html_report(
+            resume=resume,
+            job=lambda: str(report.build_html_report(
                 case_dir,
                 {
                     "case_name": case.case_name,

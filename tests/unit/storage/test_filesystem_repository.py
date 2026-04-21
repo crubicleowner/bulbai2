@@ -163,6 +163,61 @@ def test_list_cases_summarises_existing_cases_for_resume(tmp_path: Path) -> None
     assert summaries_by_id["case-bbb"]["is_recoverable"] is True
 
 
+def test_load_case_restores_optimization_case_from_case_json(tmp_path: Path) -> None:
+    """Spec §10 resume requires re-hydrating a case from disk so the pipeline
+    can continue without manual re-entry of metadata.
+    """
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+    original_case = OptimizationCase.new(case_id="case-resume", case_name="resume-demo")
+    original_case.status = CaseStatus.FAILED
+    original_case.is_recoverable = True
+    original_case.source_path = "fixtures/resume.stl"
+    repository.create_case(original_case)
+    repository.save_case(original_case)
+
+    loaded_case = repository.load_case("case-resume")
+
+    assert loaded_case.case_id == "case-resume"
+    assert loaded_case.case_name == "resume-demo"
+    assert loaded_case.status is CaseStatus.FAILED
+    assert loaded_case.is_recoverable is True
+    assert loaded_case.source_path == "fixtures/resume.stl"
+
+
+def test_load_case_raises_when_case_directory_is_missing(tmp_path: Path) -> None:
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="case-missing"):
+        repository.load_case("case-missing")
+
+
+def test_load_create_case_command_reconstructs_dataclass_from_metadata(tmp_path: Path) -> None:
+    """The resume path needs the original CreateCaseCommand to feed the same
+    pipeline stages; metadata.json stores ``asdict(command)`` so the repository
+    must reconstruct a real dataclass, not leak a plain dict.
+    """
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+    case = OptimizationCase.new(case_id="case-cmd", case_name="cmd-demo")
+    command = CreateCaseCommand(
+        case_name="cmd-demo",
+        source_path="fixtures/demo.stl",
+        vessel_length_m=142.0,
+        vessel_beam_m=19.1,
+        vessel_draft_m=6.0,
+        displacement_t=8420.0,
+        speed_knots=[18.0, 20.0],
+    )
+    repository.create_case(case, metadata={"create_case_command": command})
+
+    reconstructed = repository.load_create_case_command("case-cmd")
+
+    assert isinstance(reconstructed, CreateCaseCommand)
+    assert reconstructed.case_name == "cmd-demo"
+    assert reconstructed.source_path == "fixtures/demo.stl"
+    assert reconstructed.speed_knots == [18.0, 20.0]
+    assert reconstructed.candidate_count == 3
+
+
 def test_save_case_refreshes_updated_at_before_persisting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

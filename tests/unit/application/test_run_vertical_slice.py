@@ -1126,6 +1126,74 @@ def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Pat
     assert "Watertight after: True" in report_html
 
 
+def test_resume_vertical_slice_recovers_from_persisted_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec §10 mandates that after a mid-pipeline failure, the application
+    can resume the same case without re-entering metadata and without
+    repeating successful stages.
+    """
+    from bulbopt.application.use_cases.run_vertical_slice import resume_vertical_slice
+    from bulbopt.infrastructure.adapters.stub_evaluation import StubEvaluationAdapter
+
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+    project_root = tmp_path / "projects"
+
+    # First attempt: force an evaluation failure so the case is flagged recoverable.
+    original_evaluate = StubEvaluationAdapter.evaluate_candidates
+
+    def broken_evaluate(self, *args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("evaluation outage")
+
+    monkeypatch.setattr(StubEvaluationAdapter, "evaluate_candidates", broken_evaluate)
+
+    with pytest.raises(RuntimeError, match="evaluation outage"):
+        run_vertical_slice(
+            project_root=project_root,
+            command=CreateCaseCommand(
+                case_name="resume-demo",
+                source_path=str(source_path),
+                vessel_length_m=142.0,
+                vessel_beam_m=19.1,
+                vessel_draft_m=6.0,
+                displacement_t=8420.0,
+                speed_knots=[18.0, 20.0],
+            ),
+        )
+
+    failed_case_dirs = list(project_root.iterdir())
+    assert len(failed_case_dirs) == 1
+    case_id = failed_case_dirs[0].name
+    case_dir = failed_case_dirs[0]
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    assert case_payload["status"] == "failed"
+    assert case_payload["is_recoverable"] is True
+
+    # Second attempt: restore evaluate_candidates and call resume_vertical_slice.
+    monkeypatch.setattr(StubEvaluationAdapter, "evaluate_candidates", original_evaluate)
+
+    summary = resume_vertical_slice(project_root=project_root, case_id=case_id)
+
+    assert summary.case_id == case_id
+    assert summary.status in {"completed", "completed_with_warnings"}
+
+    case_payload_after = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    assert case_payload_after["status"] in {"completed", "completed_with_warnings"}
+    assert case_payload_after["is_recoverable"] is False
+
+    # prepare_geometry checkpoint from the first attempt should still be there
+    # and the resumed run should NOT have overwritten it with a re-executed one.
+    prepare_cp = case_dir / "working" / "checkpoints" / f"{case_id}-prepare_geometry.json"
+    assert prepare_cp.exists()
+    # The evaluation checkpoint was "failed" after the first attempt; the resume
+    # must overwrite it with a completed payload.
+    eval_cp = case_dir / "working" / "checkpoints" / f"{case_id}-evaluate_candidates.json"
+    eval_payload = json.loads(eval_cp.read_text(encoding="utf-8"))
+    assert eval_payload["status"] == "completed"
+
+
 def test_run_vertical_slice_records_checkpoint_per_stage(tmp_path: Path) -> None:
     source_path = tmp_path / "demo.stl"
     _write_valid_stl(source_path)

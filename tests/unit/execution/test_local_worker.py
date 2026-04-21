@@ -83,3 +83,51 @@ def test_local_worker_run_strict_reraises_and_persists_recoverable_checkpoint(
         "error": "strict boom",
         "is_recoverable": True,
     }
+
+
+def test_local_worker_run_strict_resumes_from_completed_checkpoint(tmp_path: Path) -> None:
+    """When ``resume=True`` and a completed checkpoint already exists, the job
+    must not execute again — the stored ``result`` is returned verbatim so the
+    pipeline can skip stages that succeeded on a previous attempt (spec §10).
+    """
+    checkpoints = FileCheckpointStore(root_dir=tmp_path)
+    worker = LocalWorker(checkpoint_store=checkpoints)
+
+    # First run writes the completed checkpoint.
+    worker.run_strict("case-004", "cached-stage", lambda: {"value": 42})
+
+    call_count = {"n": 0}
+
+    def job() -> dict:
+        call_count["n"] += 1
+        return {"value": "different"}
+
+    cached_result = worker.run_strict("case-004", "cached-stage", job, resume=True)
+
+    assert cached_result == {"value": 42}, (
+        "Expected the cached result to be returned without calling the job"
+    )
+    assert call_count["n"] == 0, "Expected cached stage to not re-execute the job"
+
+
+def test_local_worker_run_strict_reruns_failed_stage_even_with_resume(
+    tmp_path: Path,
+) -> None:
+    """A checkpoint with ``status: failed`` is not a valid resume point — the
+    worker must rerun the job so the pipeline can re-attempt a recoverable
+    stage after the engineer fixes the underlying cause.
+    """
+    checkpoints = FileCheckpointStore(root_dir=tmp_path)
+    worker = LocalWorker(checkpoint_store=checkpoints)
+
+    # Seed a failed checkpoint.
+    checkpoints.save("case-005", "failed-stage", {"status": "failed", "error": "prev", "is_recoverable": True})
+
+    def job() -> dict:
+        return {"value": "fresh-result"}
+
+    result = worker.run_strict("case-005", "failed-stage", job, resume=True)
+
+    assert result == {"value": "fresh-result"}
+    checkpoint_payload = json.loads((tmp_path / "case-005-failed-stage.json").read_text(encoding="utf-8"))
+    assert checkpoint_payload == {"status": "completed", "result": {"value": "fresh-result"}}
