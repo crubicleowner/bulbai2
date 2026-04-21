@@ -55,6 +55,8 @@ class MainWindow(QMainWindow):
         self._open_case_button: QPushButton | None = None
         self._open_report_button: QPushButton | None = None
         self._open_best_candidate_button: QPushButton | None = None
+        self._open_case_package_button: QPushButton | None = None
+        self._last_case_package_path: Path | None = None
         self._case_history_summary_label: QLabel | None = None
         self._case_history_list_widget: QListWidget | None = None
         self._resume_case_button: QPushButton | None = None
@@ -224,6 +226,10 @@ class MainWindow(QMainWindow):
         self._open_best_candidate_button.setObjectName("open_best_candidate_button")
         self._open_best_candidate_button.setEnabled(False)
         self._open_best_candidate_button.clicked.connect(self._open_best_candidate)
+        self._open_case_package_button = QPushButton("Open Case Package (.zip)", central_widget)
+        self._open_case_package_button.setObjectName("open_case_package_button")
+        self._open_case_package_button.setEnabled(False)
+        self._open_case_package_button.clicked.connect(self._open_case_package)
 
         layout.addWidget(app_label)
         layout.addWidget(ready_label)
@@ -263,6 +269,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._open_case_button)
         layout.addWidget(self._open_report_button)
         layout.addWidget(self._open_best_candidate_button)
+        layout.addWidget(self._open_case_package_button)
         layout.addStretch(1)
 
         self.setCentralWidget(central_widget)
@@ -395,6 +402,25 @@ class MainWindow(QMainWindow):
         self._open_case_button.setEnabled(True)
         self._open_report_button.setEnabled(True)
         self._open_best_candidate_button.setEnabled(self._last_best_candidate_path is not None)
+
+        package_path_candidate = self._last_case_dir / "outputs" / "packages" / f"{summary.case_id}.zip"
+        if package_path_candidate.exists():
+            self._last_case_package_path = package_path_candidate
+        else:
+            # Fallback to artifacts_index.json for paths that were rewritten manually.
+            artifacts_path = self._last_case_dir / "artifacts_index.json"
+            if artifacts_path.exists():
+                try:
+                    artifacts_payload = self._json_store.read(artifacts_path)
+                    recorded_package = artifacts_payload.get("case_package")
+                    if recorded_package:
+                        self._last_case_package_path = Path(recorded_package)
+                except Exception:
+                    self._last_case_package_path = None
+            else:
+                self._last_case_package_path = None
+        if self._open_case_package_button is not None:
+            self._open_case_package_button.setEnabled(self._last_case_package_path is not None)
         self._refresh_case_history()
 
     def _detect_bulb_region(self) -> None:
@@ -534,6 +560,10 @@ class MainWindow(QMainWindow):
     def _open_best_candidate(self) -> None:
         if self._last_best_candidate_path is not None:
             self._open_path(self._last_best_candidate_path)
+
+    def _open_case_package(self) -> None:
+        if self._last_case_package_path is not None:
+            self._open_path(self._last_case_package_path)
 
     def _open_path(self, path: Path) -> bool:
         return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))

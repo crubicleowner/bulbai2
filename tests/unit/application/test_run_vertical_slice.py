@@ -1134,6 +1134,41 @@ def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Pat
     assert "Best candidate axial extent" in report_html
 
 
+def test_run_vertical_slice_writes_case_package_archive(tmp_path: Path) -> None:
+    """Spec §6.5: each completed case must yield an archived case package so
+    engineers can share or store the full run in one file. The pipeline writes
+    the zip into outputs/packages/ and records the path in artifacts_index.
+    """
+    import zipfile
+
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="package-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    package_path = case_dir / "outputs" / "packages" / f"{summary.case_id}.zip"
+    assert package_path.exists(), "Expected the case package archive to be written"
+    with zipfile.ZipFile(package_path) as archive:
+        names = set(archive.namelist())
+    assert f"{summary.case_id}/case.json" in names
+    assert f"{summary.case_id}/outputs/reports/report.html" in names
+
+    artifacts_index = json.loads((case_dir / "artifacts_index.json").read_text(encoding="utf-8"))
+    assert artifacts_index.get("case_package") == str(package_path)
+
+
 def test_run_vertical_slice_applies_bulb_region_override_from_command(tmp_path: Path) -> None:
     """Spec §11.2: the user confirms or adjusts the auto-detected bulb area.
     When ``bulb_region_axis_min_override`` is set, the pipeline stores the

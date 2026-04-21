@@ -7,6 +7,7 @@ from bulbopt.application.use_cases.create_case import create_case
 from bulbopt.domain.core.models import CaseStatus
 from bulbopt.execution.checkpoints.file_checkpoint_store import FileCheckpointStore
 from bulbopt.execution.worker.local_worker import LocalWorker
+from bulbopt.infrastructure.adapters.case_package_exporter import CasePackageExporter
 from bulbopt.infrastructure.adapters.html_report import HtmlReportAdapter
 from bulbopt.infrastructure.adapters.openfoam_adapter import OpenFOAMAdapter
 from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
@@ -219,6 +220,21 @@ def _execute_slice(
                 },
             )),
         )
+        archive_path = worker.run_strict(
+            case.case_id,
+            "export_case_package",
+            lambda: str(
+                CasePackageExporter().export(
+                    case_dir,
+                    case_dir / "outputs" / "packages",
+                )
+            ),
+            resume=resume,
+        )
+        artifacts_index = json_store.read(artifacts_index_path)
+        artifacts_index["case_package"] = archive_path
+        json_store.write(artifacts_index_path, artifacts_index)
+
         case.status = _final_case_status(best_candidate)
         case.is_recoverable = False
         repository.save_case(case)
