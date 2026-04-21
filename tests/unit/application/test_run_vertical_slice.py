@@ -1128,6 +1128,10 @@ def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Pat
     # engineers can see whether they reviewed the auto-detected area.
     assert "Bulb region" in report_html
     assert "Confirmation source: auto_detected" in report_html
+    # Spec §14: explicit Before/After comparison.
+    assert "Before/After comparison" in report_html
+    assert "Baseline axial extent" in report_html
+    assert "Best candidate axial extent" in report_html
 
 
 def test_run_vertical_slice_applies_bulb_region_override_from_command(tmp_path: Path) -> None:

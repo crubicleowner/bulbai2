@@ -29,6 +29,57 @@
     <p>Confirmed axis_max: {{ bulb_region_summary.axis_max }}</p>
     <p>Mask ratio: {{ bulb_region_summary.mask_ratio }}</p>
     {% endif %}
+    {% if before_after_summary %}
+    <h2>Before/After comparison</h2>
+    <table border="1" cellpadding="4" cellspacing="0">
+      <thead>
+        <tr><th>Metric</th><th>Baseline (repaired)</th><th>Best candidate</th><th>Delta</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Vertices</td>
+          <td>{{ before_after_summary.baseline.vertices_count }}</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>Faces</td>
+          <td>{{ before_after_summary.baseline.faces_count }}</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>Baseline axial extent (m)</td>
+          <td>{{ before_after_summary.baseline.axial_extent_m }}</td>
+          <td>Best candidate axial extent: {{ before_after_summary.best_candidate.axial_extent_m }}</td>
+          <td>{{ before_after_summary.delta.axial_extent_pct }}%</td>
+        </tr>
+        <tr>
+          <td>Beam extent (m)</td>
+          <td>{{ before_after_summary.baseline.beam_extent_m }}</td>
+          <td>{{ before_after_summary.best_candidate.beam_extent_m }}</td>
+          <td>{{ before_after_summary.delta.beam_extent_pct }}%</td>
+        </tr>
+        <tr>
+          <td>Draft extent (m)</td>
+          <td>{{ before_after_summary.baseline.draft_extent_m }}</td>
+          <td>{{ before_after_summary.best_candidate.draft_extent_m }}</td>
+          <td>{{ before_after_summary.delta.draft_extent_pct }}%</td>
+        </tr>
+        <tr>
+          <td>Surface area (m²)</td>
+          <td>{{ before_after_summary.baseline.surface_area_m2 }}</td>
+          <td>{{ before_after_summary.best_candidate.surface_area_m2 }}</td>
+          <td>{{ before_after_summary.delta.surface_area_pct }}%</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Best candidate id: {{ before_after_summary.best_candidate.candidate_id }}</p>
+    <p>Slenderness ratio: {{ before_after_summary.best_candidate.slenderness_ratio }}</p>
+    <p>Axial gain (m): {{ before_after_summary.delta.axial_gain_m }}</p>
+    <p>Beam growth (m): {{ before_after_summary.delta.beam_growth_m }}</p>
+    <p>Draft reduction (m): {{ before_after_summary.delta.draft_reduction_m }}</p>
+    {% endif %}
     {% if objective_weights %}
     <h2>Objective weights</h2>
     <p>Resistance weight: {{ objective_weights.resistance_weight }}</p>

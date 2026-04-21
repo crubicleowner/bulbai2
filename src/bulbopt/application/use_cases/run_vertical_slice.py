@@ -202,6 +202,10 @@ def _execute_slice(
                     "optimization_trace": optimization_trace,
                     "repair_summary": _repair_summary_payload(geometry_analysis),
                     "bulb_region_summary": _bulb_region_summary_payload(geometry_analysis),
+                    "before_after_summary": _before_after_summary_payload(
+                        geometry_analysis=geometry_analysis,
+                        best_candidate=best_candidate,
+                    ),
                     "operational_profile_summary": best_candidate.get("calm_water_metrics", {}),
                     "calm_water_summary": best_candidate.get("calm_water_metrics", {}),
                     "wave_response_summary": best_candidate.get("wave_response_metrics", {}),
@@ -453,6 +457,65 @@ def _normalized_candidate(candidate: dict) -> dict:
     normalized = dict(candidate)
     normalized["acceptability"] = _normalized_acceptability(candidate)
     return normalized
+
+
+def _before_after_summary_payload(
+    *,
+    geometry_analysis: dict,
+    best_candidate: dict,
+) -> dict:
+    """Spec §14: before/after visual comparison. Keep it numeric for the first
+    slice — baseline stats come from the repaired mesh's quality_report, and
+    best-candidate stats come from geometry_metrics.
+    """
+    quality_report = geometry_analysis.get("quality_report", {})
+    geometry_metrics = best_candidate.get("geometry_metrics", {})
+    baseline_extents = quality_report.get("extents") or [0.0, 0.0, 0.0]
+    primary_axis = int(quality_report.get("primary_axis", 0))
+    secondary_axes = [idx for idx in range(3) if idx != primary_axis]
+    baseline_axial = float(baseline_extents[primary_axis]) if len(baseline_extents) == 3 else 0.0
+    baseline_beam = float(baseline_extents[secondary_axes[0]]) if len(baseline_extents) == 3 else 0.0
+    baseline_draft = float(baseline_extents[secondary_axes[1]]) if len(baseline_extents) == 3 else 0.0
+    candidate_axial = float(geometry_metrics.get("axial_extent_m", 0.0))
+    candidate_beam = float(geometry_metrics.get("beam_extent_m", 0.0))
+    candidate_draft = float(geometry_metrics.get("draft_extent_m", 0.0))
+    baseline_surface = float(quality_report.get("surface_area", 0.0))
+    candidate_surface = float(geometry_metrics.get("surface_area_m2", 0.0))
+
+    def _pct_delta(baseline: float, candidate: float) -> float:
+        if baseline <= 0.0:
+            return 0.0
+        return round(((candidate - baseline) / baseline) * 100.0, 3)
+
+    return {
+        "baseline": {
+            "vertices_count": quality_report.get("vertices_count"),
+            "faces_count": quality_report.get("faces_count"),
+            "watertight": quality_report.get("watertight"),
+            "axial_extent_m": baseline_axial,
+            "beam_extent_m": baseline_beam,
+            "draft_extent_m": baseline_draft,
+            "surface_area_m2": baseline_surface,
+            "volume_m3": quality_report.get("volume"),
+        },
+        "best_candidate": {
+            "candidate_id": best_candidate.get("candidate_id"),
+            "axial_extent_m": candidate_axial,
+            "beam_extent_m": candidate_beam,
+            "draft_extent_m": candidate_draft,
+            "surface_area_m2": candidate_surface,
+            "slenderness_ratio": geometry_metrics.get("slenderness_ratio"),
+        },
+        "delta": {
+            "axial_extent_pct": _pct_delta(baseline_axial, candidate_axial),
+            "beam_extent_pct": _pct_delta(baseline_beam, candidate_beam),
+            "draft_extent_pct": _pct_delta(baseline_draft, candidate_draft),
+            "surface_area_pct": _pct_delta(baseline_surface, candidate_surface),
+            "axial_gain_m": geometry_metrics.get("axial_gain_m"),
+            "beam_growth_m": geometry_metrics.get("beam_growth_m"),
+            "draft_reduction_m": geometry_metrics.get("draft_reduction_m"),
+        },
+    }
 
 
 def _bulb_region_summary_payload(geometry_analysis: dict) -> dict:
