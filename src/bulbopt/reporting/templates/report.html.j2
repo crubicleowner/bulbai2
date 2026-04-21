@@ -29,6 +29,25 @@
     <p>Confirmed axis_max: {{ bulb_region_summary.axis_max }}</p>
     <p>Mask ratio: {{ bulb_region_summary.mask_ratio }}</p>
     {% endif %}
+    {% if timing_summary and timing_summary.stages %}
+    <h2>Stage timing</h2>
+    <p>Total elapsed: {{ timing_summary.total_seconds }} s across {{ timing_summary.stage_count }} stages</p>
+    {% if timing_summary.slowest_stage %}
+    <p>Slowest stage: {{ timing_summary.slowest_stage }} ({{ timing_summary.slowest_stage_seconds }} s)</p>
+    {% endif %}
+    <table border="1" cellpadding="4" cellspacing="0">
+      <thead><tr><th>Stage</th><th>Status</th><th>Elapsed (s)</th></tr></thead>
+      <tbody>
+        {% for stage in timing_summary.stages %}
+        <tr>
+          <td>{{ stage.stage }}</td>
+          <td>{{ stage.status }}</td>
+          <td>{{ stage.elapsed_seconds }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
     {% if before_after_summary %}
     <h2>Before/After comparison</h2>
     <table border="1" cellpadding="4" cellspacing="0">

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from bulbopt.execution.checkpoints.file_checkpoint_store import FileCheckpointStore
@@ -10,14 +11,22 @@ class LocalWorker:
         self.checkpoint_store = checkpoint_store
 
     def run(self, case_id: str, stage_name: str, job: Callable[[], Any]) -> Any:
+        started_at = time.perf_counter()
         try:
             result = job()
         except Exception as exc:
-            payload = {"status": "failed", "error": str(exc), "is_recoverable": True}
+            elapsed = round(time.perf_counter() - started_at, 6)
+            payload = {
+                "status": "failed",
+                "error": str(exc),
+                "is_recoverable": True,
+                "elapsed_seconds": elapsed,
+            }
             self.checkpoint_store.save(case_id, stage_name, payload)
             return payload
 
-        payload = {"status": "completed", "result": result}
+        elapsed = round(time.perf_counter() - started_at, 6)
+        payload = {"status": "completed", "result": result, "elapsed_seconds": elapsed}
         self.checkpoint_store.save(case_id, stage_name, payload)
         return result
 
@@ -48,13 +57,21 @@ class LocalWorker:
             if cached_result is not None:
                 return cached_result
 
+        started_at = time.perf_counter()
         try:
             result = job()
         except Exception as exc:
-            payload = {"status": "failed", "error": str(exc), "is_recoverable": True}
+            elapsed = round(time.perf_counter() - started_at, 6)
+            payload = {
+                "status": "failed",
+                "error": str(exc),
+                "is_recoverable": True,
+                "elapsed_seconds": elapsed,
+            }
             self.checkpoint_store.save(case_id, stage_name, payload)
             raise
 
-        payload = {"status": "completed", "result": result}
+        elapsed = round(time.perf_counter() - started_at, 6)
+        payload = {"status": "completed", "result": result, "elapsed_seconds": elapsed}
         self.checkpoint_store.save(case_id, stage_name, payload)
         return result

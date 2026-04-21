@@ -169,6 +169,7 @@ def _execute_slice(
         artifacts_index["openfoam_case_manifest"] = str(case_dir / "working" / "openfoam_case" / "openfoam_case_manifest.json")
         artifacts_index["openfoam_run_manifest"] = str(case_dir / "working" / "openfoam_case" / "openfoam_run_manifest.json")
         json_store.write(artifacts_index_path, artifacts_index)
+        timing_summary = _read_timing_summary(case_dir, case.case_id)
         case.summary_metrics = _build_case_summary_metrics(
             geometry_analysis=geometry_analysis,
             best_candidate=best_candidate,
@@ -180,6 +181,7 @@ def _execute_slice(
             ranked_candidates=ranked_candidates,
             optimization_trace=optimization_trace,
             high_fidelity_boundary=high_fidelity_boundary,
+            timing_summary=timing_summary,
         )
         case.status = CaseStatus.ASSEMBLING_RESULTS
         repository.save_case(case)
@@ -208,6 +210,7 @@ def _execute_slice(
                         geometry_analysis=geometry_analysis,
                         best_candidate=best_candidate,
                     ),
+                    "timing_summary": case.summary_metrics.get("timing", {}),
                     "operational_profile_summary": best_candidate.get("calm_water_metrics", {}),
                     "calm_water_summary": best_candidate.get("calm_water_metrics", {}),
                     "wave_response_summary": best_candidate.get("wave_response_metrics", {}),
@@ -235,6 +238,10 @@ def _execute_slice(
         artifacts_index["case_package"] = archive_path
         json_store.write(artifacts_index_path, artifacts_index)
 
+        # Refresh timing after the final two stages (report + export) have
+        # written their checkpoints, so case.json captures the complete
+        # stage list when the user opens it for observability.
+        case.summary_metrics["timing"] = _read_timing_summary(case_dir, case.case_id)
         case.status = _final_case_status(best_candidate)
         case.is_recoverable = False
         repository.save_case(case)
@@ -263,6 +270,50 @@ def _final_case_status(best_candidate: dict) -> CaseStatus:
     return CaseStatus.COMPLETED
 
 
+def _read_timing_summary(case_dir: Path, case_id: str) -> dict:
+    """Aggregate per-stage elapsed_seconds from working/checkpoints/<case_id>-*.json.
+
+    Stages that never ran yet are skipped. The total is computed only from
+    completed stages so partial runs report accurate elapsed time.
+    """
+    import json as _json
+
+    checkpoints_dir = case_dir / "working" / "checkpoints"
+    stages: list[dict] = []
+    total_seconds = 0.0
+    if not checkpoints_dir.exists():
+        return {"stages": stages, "total_seconds": 0.0, "stage_count": 0}
+
+    prefix = f"{case_id}-"
+    for checkpoint in sorted(checkpoints_dir.glob(f"{prefix}*.json")):
+        try:
+            payload = _json.loads(checkpoint.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        stage_name = checkpoint.stem[len(prefix):]
+        elapsed = float(payload.get("elapsed_seconds") or 0.0)
+        status = payload.get("status", "unknown")
+        stages.append({"stage": stage_name, "status": status, "elapsed_seconds": round(elapsed, 6)})
+        if status == "completed":
+            total_seconds += elapsed
+
+    # Also note the slowest stage for the UI "where did the time go" read.
+    slowest_stage = max(
+        (stage for stage in stages if stage["status"] == "completed"),
+        key=lambda item: item["elapsed_seconds"],
+        default=None,
+    )
+    return {
+        "stages": stages,
+        "total_seconds": round(total_seconds, 6),
+        "stage_count": len(stages),
+        "slowest_stage": slowest_stage["stage"] if slowest_stage else None,
+        "slowest_stage_seconds": slowest_stage["elapsed_seconds"] if slowest_stage else None,
+    }
+
+
 def _build_case_summary_metrics(
     geometry_analysis: dict,
     best_candidate: dict,
@@ -274,6 +325,7 @@ def _build_case_summary_metrics(
     ranked_candidates: list[dict],
     optimization_trace: dict[str, str | list[str]],
     high_fidelity_boundary: dict[str, bool | str],
+    timing_summary: dict | None = None,
 ) -> dict:
     quality_report = geometry_analysis.get("quality_report", {})
     geometry_metrics = best_candidate.get("geometry_metrics", {})
@@ -440,6 +492,7 @@ def _build_case_summary_metrics(
             "rows": rejected_rows,
         },
         "high_fidelity_boundary": high_fidelity_boundary,
+        "timing": timing_summary or {"stages": [], "total_seconds": 0.0, "stage_count": 0},
     }
 
 

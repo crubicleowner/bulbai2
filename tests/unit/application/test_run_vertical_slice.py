@@ -1134,6 +1134,51 @@ def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Pat
     assert "Best candidate axial extent" in report_html
 
 
+def test_run_vertical_slice_records_per_stage_timing_in_summary_metrics(tmp_path: Path) -> None:
+    """Observability: after a successful run, case.summary_metrics.timing
+    contains per-stage elapsed_seconds aggregated from working/checkpoints,
+    plus the slowest stage so the engineer can spot the bottleneck.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="timing-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    timing = case_payload["summary_metrics"]["timing"]
+    assert timing["stage_count"] >= 7  # at least 7 pipeline stages including export
+    assert timing["total_seconds"] >= 0.0
+    stage_names = {stage["stage"] for stage in timing["stages"]}
+    assert {
+        "prepare_geometry",
+        "generate_candidates",
+        "evaluate_candidates",
+        "rank_candidates",
+        "openfoam_build_case",
+        "openfoam_run_case",
+        "build_html_report",
+        "export_case_package",
+    }.issubset(stage_names)
+    assert timing["slowest_stage"] in stage_names
+    assert timing["slowest_stage_seconds"] >= 0.0
+
+    report_html = (case_dir / "outputs" / "reports" / "report.html").read_text(encoding="utf-8")
+    assert "Stage timing" in report_html
+    assert "prepare_geometry" in report_html
+
+
 def test_run_vertical_slice_writes_case_package_archive(tmp_path: Path) -> None:
     """Spec §6.5: each completed case must yield an archived case package so
     engineers can share or store the full run in one file. The pipeline writes

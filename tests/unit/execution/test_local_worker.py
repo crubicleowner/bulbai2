@@ -17,10 +17,9 @@ def test_local_worker_success_returns_job_result_and_writes_checkpoint(tmp_path:
     checkpoint_path = tmp_path / "case-001-stage-1.json"
     assert checkpoint_path.exists()
     checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    assert checkpoint_payload == {
-        "status": "completed",
-        "result": {"status": "ok"},
-    }
+    assert checkpoint_payload["status"] == "completed"
+    assert checkpoint_payload["result"] == {"status": "ok"}
+    assert checkpoint_payload["elapsed_seconds"] >= 0.0
 
 
 def test_local_worker_failure_returns_recoverable_payload_and_writes_checkpoint(
@@ -34,15 +33,17 @@ def test_local_worker_failure_returns_recoverable_payload_and_writes_checkpoint(
 
     result = worker.run("case-001", "stage-1", job)
 
-    assert result == {"status": "failed", "error": "boom", "is_recoverable": True}
+    assert result["status"] == "failed"
+    assert result["error"] == "boom"
+    assert result["is_recoverable"] is True
+    assert result["elapsed_seconds"] >= 0.0
     checkpoint_path = tmp_path / "case-001-stage-1.json"
     assert checkpoint_path.exists()
     checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    assert checkpoint_payload == {
-        "status": "failed",
-        "error": "boom",
-        "is_recoverable": True,
-    }
+    assert checkpoint_payload["status"] == "failed"
+    assert checkpoint_payload["error"] == "boom"
+    assert checkpoint_payload["is_recoverable"] is True
+    assert checkpoint_payload["elapsed_seconds"] >= 0.0
 
 
 def test_local_worker_run_strict_returns_result_on_success(tmp_path: Path) -> None:
@@ -55,10 +56,9 @@ def test_local_worker_run_strict_returns_result_on_success(tmp_path: Path) -> No
     checkpoint_path = tmp_path / "case-002-stage-strict-ok.json"
     assert checkpoint_path.exists()
     checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    assert checkpoint_payload == {
-        "status": "completed",
-        "result": ["candidate-1", "candidate-2"],
-    }
+    assert checkpoint_payload["status"] == "completed"
+    assert checkpoint_payload["result"] == ["candidate-1", "candidate-2"]
+    assert checkpoint_payload["elapsed_seconds"] >= 0.0
 
 
 def test_local_worker_run_strict_reraises_and_persists_recoverable_checkpoint(
@@ -78,11 +78,10 @@ def test_local_worker_run_strict_reraises_and_persists_recoverable_checkpoint(
     checkpoint_path = tmp_path / "case-003-stage-strict-fail.json"
     assert checkpoint_path.exists()
     checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    assert checkpoint_payload == {
-        "status": "failed",
-        "error": "strict boom",
-        "is_recoverable": True,
-    }
+    assert checkpoint_payload["status"] == "failed"
+    assert checkpoint_payload["error"] == "strict boom"
+    assert checkpoint_payload["is_recoverable"] is True
+    assert checkpoint_payload["elapsed_seconds"] >= 0.0
 
 
 def test_local_worker_run_strict_resumes_from_completed_checkpoint(tmp_path: Path) -> None:
@@ -130,4 +129,6 @@ def test_local_worker_run_strict_reruns_failed_stage_even_with_resume(
 
     assert result == {"value": "fresh-result"}
     checkpoint_payload = json.loads((tmp_path / "case-005-failed-stage.json").read_text(encoding="utf-8"))
-    assert checkpoint_payload == {"status": "completed", "result": {"value": "fresh-result"}}
+    assert checkpoint_payload["status"] == "completed"
+    assert checkpoint_payload["result"] == {"value": "fresh-result"}
+    assert checkpoint_payload["elapsed_seconds"] >= 0.0
