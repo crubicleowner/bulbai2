@@ -48,6 +48,42 @@ class FilesystemProjectRepository:
         case_dir = self._require_existing_case(case_id)
         self.json_store.write(case_dir / "candidate_index.json", payload)
 
+    def list_cases(self) -> list[dict[str, Any]]:
+        """Enumerate persisted cases so the UI can offer continuation (spec §10).
+
+        Returns a list of summaries ordered by ``updated_at`` descending (most
+        recently touched first). Non-case folders and case folders lacking a
+        readable ``case.json`` are skipped so a single bad case never breaks
+        the whole listing.
+        """
+
+        if not self.root_dir.exists():
+            return []
+
+        summaries: list[dict[str, Any]] = []
+        for child in sorted(self.root_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            case_json = child / "case.json"
+            if not case_json.exists():
+                continue
+            try:
+                payload = self.json_store.read(case_json)
+            except (OSError, ValueError):
+                continue
+            summaries.append(
+                {
+                    "case_id": payload.get("case_id", child.name),
+                    "case_name": payload.get("case_name", ""),
+                    "status": payload.get("status", "unknown"),
+                    "is_recoverable": bool(payload.get("is_recoverable", False)),
+                    "updated_at": payload.get("updated_at", ""),
+                }
+            )
+
+        summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+        return summaries
+
     def _create_case_tree(self, case_dir: Path) -> None:
         for relative_path in [
             Path("input"),

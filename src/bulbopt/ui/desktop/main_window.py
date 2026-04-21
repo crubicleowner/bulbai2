@@ -55,6 +55,8 @@ class MainWindow(QMainWindow):
         self._open_case_button: QPushButton | None = None
         self._open_report_button: QPushButton | None = None
         self._open_best_candidate_button: QPushButton | None = None
+        self._case_history_summary_label: QLabel | None = None
+        self._case_history_list_widget: QListWidget | None = None
         self._last_case_dir: Path | None = None
         self._last_report_path: Path | None = None
         self._last_best_candidate_path: Path | None = None
@@ -189,6 +191,10 @@ class MainWindow(QMainWindow):
         self._optimization_trace_summary_label.setObjectName("optimization_trace_summary_label")
         self._optimization_trace_list_widget = QListWidget(central_widget)
         self._optimization_trace_list_widget.setObjectName("optimization_trace_list_widget")
+        self._case_history_summary_label = QLabel("Previous cases: none yet", central_widget)
+        self._case_history_summary_label.setObjectName("case_history_summary_label")
+        self._case_history_list_widget = QListWidget(central_widget)
+        self._case_history_list_widget.setObjectName("case_history_list_widget")
         self._open_case_button = QPushButton("Open Case Folder", central_widget)
         self._open_case_button.setObjectName("open_case_button")
         self._open_case_button.setEnabled(False)
@@ -232,12 +238,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._rejected_candidates_list_widget)
         layout.addWidget(self._optimization_trace_summary_label)
         layout.addWidget(self._optimization_trace_list_widget)
+        layout.addWidget(self._case_history_summary_label)
+        layout.addWidget(self._case_history_list_widget)
         layout.addWidget(self._open_case_button)
         layout.addWidget(self._open_report_button)
         layout.addWidget(self._open_best_candidate_button)
         layout.addStretch(1)
 
         self.setCentralWidget(central_widget)
+        self._refresh_case_history()
 
     def _run_vertical_slice(self) -> None:
         if (
@@ -366,6 +375,35 @@ class MainWindow(QMainWindow):
         self._open_case_button.setEnabled(True)
         self._open_report_button.setEnabled(True)
         self._open_best_candidate_button.setEnabled(self._last_best_candidate_path is not None)
+        self._refresh_case_history()
+
+    def _refresh_case_history(self) -> None:
+        """Populate the case history panel from the repository (spec §10)."""
+        if self._case_history_list_widget is None or self._case_history_summary_label is None:
+            return
+
+        list_cases = self.services.get("list_cases")
+        if not callable(list_cases):
+            return
+
+        summaries = list_cases()
+        self._case_history_list_widget.clear()
+        if not summaries:
+            self._case_history_summary_label.setText("Previous cases: none yet")
+            return
+
+        recoverable_count = sum(1 for summary in summaries if summary.get("is_recoverable"))
+        self._case_history_summary_label.setText(
+            f"Previous cases: {len(summaries)} total | recoverable: {recoverable_count}"
+        )
+        for summary in summaries:
+            recoverable_flag = " (recoverable)" if summary.get("is_recoverable") else ""
+            self._case_history_list_widget.addItem(
+                f"{summary.get('case_id', 'n/a')} | "
+                f"{summary.get('case_name', 'n/a')} | "
+                f"status={summary.get('status', 'n/a')}{recoverable_flag} | "
+                f"updated={summary.get('updated_at', 'n/a')}"
+            )
 
     def _open_case_dir(self) -> None:
         if self._last_case_dir is not None:

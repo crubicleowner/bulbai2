@@ -613,6 +613,90 @@ def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, mon
         app.processEvents()
 
 
+def test_main_window_surfaces_case_history_panel(tmp_path: Path, monkeypatch) -> None:
+    """Spec §10 requires the desktop to surface existing cases so engineers can
+    pick one for continuation. This smoke test verifies the panel is rendered,
+    populated from ``services["list_cases"]``, and refreshed after a new run.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    call_log: dict[str, int] = {"list_cases_calls": 0}
+    history_state: list[list[dict]] = [
+        [
+            {
+                "case_id": "case-earlier",
+                "case_name": "earlier",
+                "status": "failed",
+                "is_recoverable": True,
+                "updated_at": "2026-04-18T09:00:00+00:00",
+            }
+        ]
+    ]
+
+    def fake_list_cases() -> list[dict]:
+        call_log["list_cases_calls"] += 1
+        return history_state[0]
+
+    def fake_runner(**kwargs):
+        history_state[0] = history_state[0] + [
+            {
+                "case_id": "case-new",
+                "case_name": str(kwargs["case_name"]),
+                "status": "completed",
+                "is_recoverable": False,
+                "updated_at": "2026-04-18T10:00:00+00:00",
+            }
+        ]
+        return CaseSummary(
+            case_id="case-new",
+            case_name=str(kwargs["case_name"]),
+            status="completed",
+            best_candidate_id="cand-1",
+        )
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": fake_runner,
+            "list_cases": fake_list_cases,
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+    try:
+        central_widget = window.centralWidget()
+        assert central_widget is not None
+
+        history_label = central_widget.findChild(QLabel, "case_history_summary_label")
+        history_list = central_widget.findChild(QListWidget, "case_history_list_widget")
+        run_button = central_widget.findChild(QPushButton, "run_vertical_slice_button")
+
+        assert history_label is not None
+        assert history_list is not None
+        assert "recoverable: 1" in history_label.text()
+        assert history_list.count() == 1
+        assert "case-earlier" in history_list.item(0).text()
+
+        # Stub the artifacts read path so the run doesn't blow up.
+        (tmp_path / "projects" / "case-new").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "projects" / "case-new" / "artifacts_index.json").write_text("{}", encoding="utf-8")
+
+        # Simulate a run.
+        run_button.click()
+        app.processEvents()
+
+        assert call_log["list_cases_calls"] >= 2
+        assert history_list.count() == 2
+        joined_items = "\n".join(history_list.item(i).text() for i in range(history_list.count()))
+        assert "case-new" in joined_items
+        assert "case-earlier" in joined_items
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_opens_case_report_and_best_candidate_artifacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
 

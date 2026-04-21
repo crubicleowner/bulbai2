@@ -122,6 +122,47 @@ def test_create_case_rejects_path_traversal_case_id(tmp_path: Path) -> None:
         repository.create_case(case)
 
 
+def test_list_cases_returns_empty_list_when_root_is_missing(tmp_path: Path) -> None:
+    """Before any case is created the repository root may not yet exist; listing
+    must tolerate this and return an empty list rather than raising — spec §10
+    implies restart must not require manual filesystem repair.
+    """
+    repository = FilesystemProjectRepository(root_dir=tmp_path / "does-not-exist-yet")
+
+    assert repository.list_cases() == []
+
+
+def test_list_cases_summarises_existing_cases_for_resume(tmp_path: Path) -> None:
+    """Each case on disk must be surfaced with id, name, status, and recoverability
+    flag so the UI can implement spec §10 "offer continuation" without re-reading
+    each case.json by hand.
+    """
+    repository = FilesystemProjectRepository(root_dir=tmp_path)
+    completed_case = OptimizationCase.new(case_id="case-aaa", case_name="done")
+    completed_case.status = CaseStatus.COMPLETED
+    repository.create_case(completed_case)
+    repository.save_case(completed_case)
+
+    failed_case = OptimizationCase.new(case_id="case-bbb", case_name="failed")
+    failed_case.status = CaseStatus.FAILED
+    failed_case.is_recoverable = True
+    repository.create_case(failed_case)
+    repository.save_case(failed_case)
+
+    # A stray non-case folder must not break listing (defensive per §10).
+    (tmp_path / "not-a-case").mkdir()
+
+    summaries = repository.list_cases()
+    summaries_by_id = {summary["case_id"]: summary for summary in summaries}
+
+    assert set(summaries_by_id) == {"case-aaa", "case-bbb"}
+    assert summaries_by_id["case-aaa"]["status"] == "completed"
+    assert summaries_by_id["case-aaa"]["is_recoverable"] is False
+    assert summaries_by_id["case-aaa"]["case_name"] == "done"
+    assert summaries_by_id["case-bbb"]["status"] == "failed"
+    assert summaries_by_id["case-bbb"]["is_recoverable"] is True
+
+
 def test_save_case_refreshes_updated_at_before_persisting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
