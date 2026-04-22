@@ -9,6 +9,85 @@ from bulbopt.infrastructure.adapters.openfoam_adapter import OpenFOAMAdapter
 from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
 
 
+def test_openfoam_runner_invokes_solver_via_absolute_path_when_bin_dir_configured(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Spec §4.8 real-world path: Windows ``CreateProcessW`` uses the parent
+    process's ``%PATH%`` to locate a bare command name regardless of the
+    ``env`` argument to ``subprocess.run``. The runner must therefore resolve
+    each solver in ``DEFAULT_SOLVER_CHAIN`` to its absolute executable path
+    via the configured bin dir, otherwise the subprocess fails with
+    ``FileNotFoundError`` even though the binary sits right there.
+    """
+    import subprocess as subprocess_module
+
+    configured_bin = tmp_path / "fake-foam-bin"
+    configured_bin.mkdir()
+    # Create fake binaries so the adapter can actually see them on disk.
+    for solver in ("blockMesh.exe", "snappyHexMesh.exe"):
+        (configured_bin / solver).write_text("fake", encoding="utf-8")
+    monkeypatch.setenv("BULBOPT_OPENFOAM_BIN", str(configured_bin))
+
+    case_dir = tmp_path / "case"
+    geometry_path = case_dir / "candidate.stl"
+    geometry_path.parent.mkdir(parents=True, exist_ok=True)
+    geometry_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+
+    builder = OpenFOAMAdapter()
+    monkeypatch.setattr(builder, "is_available", lambda: True)
+    manifest = builder.build_case(
+        case_dir,
+        best_candidate_id="candidate-abs",
+        best_candidate_geometry_path=geometry_path,
+    )
+
+    runner = OpenFOAMRunnerAdapter()
+    monkeypatch.setattr(runner, "is_available", lambda: True)
+
+    commands_launched: list[list[str]] = []
+
+    class _FakeCompletedProcess:
+        def __init__(self, args, returncode: int, stdout: str = "", stderr: str = "") -> None:
+            self.args = args
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(args, **kwargs):
+        commands_launched.append(list(args))
+        return _FakeCompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    runner.run_case(
+        case_dir / "working" / "openfoam_case",
+        case_manifest=manifest,
+        execute=True,
+    )
+
+    assert commands_launched, "Expected subprocess.run to be called"
+    first_cmd = commands_launched[0][0]
+    # Must be an absolute path ending with .exe, not a bare name.
+    assert first_cmd.lower().endswith("blockmesh.exe"), (
+        f"Expected absolute blockMesh.exe path, got: {first_cmd}"
+    )
+    from pathlib import Path as _P
+
+    assert _P(first_cmd).is_absolute(), (
+        f"Expected absolute path for solver, got relative: {first_cmd}"
+    )
+    # Second command is snappyHexMesh; solver flags come after the exe.
+    second_cmd = commands_launched[1][0]
+    assert second_cmd.lower().endswith("snappyhexmesh.exe"), (
+        f"Expected absolute snappyHexMesh.exe path, got: {second_cmd}"
+    )
+    # Original flags preserved.
+    assert "-overwrite" in commands_launched[1], (
+        f"Expected -overwrite flag preserved; got: {commands_launched[1]}"
+    )
+
+
 def test_openfoam_runner_prepends_configured_bin_dir_to_subprocess_path(
     tmp_path: Path,
     monkeypatch,

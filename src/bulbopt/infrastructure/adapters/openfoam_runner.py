@@ -91,15 +91,31 @@ class OpenFOAMRunnerAdapter:
         # linker resolves the DLL dependencies.
         subprocess_env = os.environ.copy()
         bin_dir = _configured_bin_dir()
+        short_bin: str | None = None
         if bin_dir:
             short_bin = _shorten_path(bin_dir)
             subprocess_env["PATH"] = short_bin + os.pathsep + subprocess_env.get("PATH", "")
+            # Derive WM_PROJECT_DIR / HOME from bin_dir so the solver can locate
+            # the global etc/controlDict. Bin dir shape:
+            #   <HOME>/<WM_PROJECT_DIR_NAME>/platforms/<TYPE>/bin
+            # so WM_PROJECT_DIR is bin_dir.parents[2] and HOME is parents[3].
+            from pathlib import Path as _Path
+
+            bin_path = _Path(bin_dir)
+            if len(bin_path.parents) >= 4:
+                wm_project_dir = bin_path.parents[2]
+                home_dir = bin_path.parents[3]
+                subprocess_env.setdefault("WM_PROJECT", "OpenFOAM")
+                subprocess_env.setdefault("WM_PROJECT_DIR", _shorten_path(str(wm_project_dir)))
+                subprocess_env.setdefault("HOME", _shorten_path(str(home_dir)))
+                subprocess_env.setdefault("FOAM_ETC", _shorten_path(str(wm_project_dir / "etc")))
         subprocess_cwd = _shorten_path(str(openfoam_case_dir))
 
         for command in self.DEFAULT_SOLVER_CHAIN:
+            resolved_command = self._resolve_command(command, short_bin)
             try:
                 completed = subprocess.run(
-                    command,
+                    resolved_command,
                     cwd=subprocess_cwd,
                     env=subprocess_env,
                     capture_output=True,
@@ -150,6 +166,29 @@ class OpenFOAMRunnerAdapter:
         }
         run_manifest_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result
+
+    def _resolve_command(
+        self,
+        command: tuple[str, ...],
+        bin_dir: str | None,
+    ) -> list[str]:
+        """Resolve the solver name to its absolute .exe path when a bin
+        directory is configured.
+
+        Windows ``CreateProcessW`` uses the parent process's ``%PATH%`` to
+        look up bare command names, not the ``env`` passed to
+        ``subprocess.run``. Passing the absolute path side-steps the quirk
+        and lets the solver launch from any parent shell.
+        """
+        if not command:
+            return list(command)
+        head, *tail = command
+        if bin_dir and not os.path.isabs(head):
+            exe_name = head if head.lower().endswith(".exe") else f"{head}.exe"
+            candidate = os.path.join(bin_dir, exe_name)
+            if os.path.isfile(candidate):
+                return [candidate, *tail]
+        return list(command)
 
     def _read_case_manifest(self, openfoam_case_dir: Path) -> dict:
         manifest_path = openfoam_case_dir / "openfoam_case_manifest.json"
