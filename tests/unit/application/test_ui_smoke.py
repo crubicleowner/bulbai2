@@ -613,12 +613,64 @@ def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, mon
         app.processEvents()
 
 
+def test_night_run_dialog_round_trips_knobs(tmp_path: Path, monkeypatch) -> None:
+    """Dialog inputs must serialise into a dict the bootstrap runner can
+    consume directly (same keys as services['run_night_optimization']
+    expects)."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from bulbopt.ui.desktop.night_run_dialog import NightRunDialog
+
+    app = QApplication.instance() or QApplication([])
+    dialog = NightRunDialog()
+    try:
+        budget = dialog.findChild(QDoubleSpinBox, "night_budget_hours_input")
+        population = dialog.findChild(QSpinBox, "night_population_input")
+        generations = dialog.findChild(QSpinBox, "night_generations_input")
+        hf = dialog.findChild(QSpinBox, "night_high_fidelity_input")
+        seed = dialog.findChild(QLineEdit, "night_seed_input")
+        assert budget is not None
+        assert population is not None
+        assert generations is not None
+        assert hf is not None
+        assert seed is not None
+
+        # Defaults first.
+        defaults = dialog.values()
+        assert defaults["budget_hours"] == 8.0
+        assert defaults["population"] == 50
+        assert defaults["generations"] == 20
+        assert defaults["high_fidelity_budget"] == 10
+        assert defaults["seed"] is None
+
+        # User edits.
+        budget.setValue(6.5)
+        population.setValue(40)
+        generations.setValue(15)
+        hf.setValue(8)
+        seed.setText("777")
+
+        edited = dialog.values()
+        assert edited["budget_hours"] == 6.5
+        assert edited["population"] == 40
+        assert edited["generations"] == 15
+        assert edited["high_fidelity_budget"] == 8
+        assert edited["seed"] == 777
+
+        # Garbage seed stays None rather than raising.
+        seed.setText("not-an-int")
+        assert dialog.values()["seed"] is None
+    finally:
+        dialog.close()
+        app.processEvents()
+
+
 def test_main_window_night_run_button_invokes_service_and_updates_status(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Spec §11.1: engineer clicks Night Run; the desktop hands the wizard
-    payload (plus default NSGA-II knobs) to services['run_night_optimization']
-    and surfaces the winner case_id / candidate id in a status label."""
+    """Spec §11.1: engineer clicks Night Run, NightRunDialog collects the
+    NSGA-II budget, and the desktop hands the merged payload to
+    services['run_night_optimization'], then surfaces the winner in a
+    status label."""
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
 
     calls: list[dict] = []
@@ -647,6 +699,28 @@ def test_main_window_night_run_button_invokes_service_and_updates_status(
 
     monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
 
+    # Stub the dialog so tests never block on exec().
+    class _FakeDialog:
+        Accepted = 1
+        Rejected = 0
+
+        def __init__(self, parent=None):
+            pass
+
+        def exec(self):
+            return _FakeDialog.Accepted
+
+        def values(self):
+            return {
+                "budget_hours": 4.0,
+                "population": 30,
+                "generations": 10,
+                "high_fidelity_budget": 5,
+                "seed": 123,
+            }
+
+    monkeypatch.setattr(main_window_module, "NightRunDialog", _FakeDialog)
+
     app = QApplication.instance() or QApplication([])
     window = MainWindow(project_root=tmp_path / "projects")
     try:
@@ -661,12 +735,12 @@ def test_main_window_night_run_button_invokes_service_and_updates_status(
         app.processEvents()
 
         assert len(calls) == 1
-        # NSGA-II defaults must be threaded through when the user hasn't
-        # configured a dialog yet.
         night_kwargs = calls[0]
-        assert night_kwargs["budget_hours"] == 8.0
-        assert night_kwargs["population"] == 50
-        assert night_kwargs["generations"] == 20
+        # Dialog values must be threaded through, not the default constants.
+        assert night_kwargs["budget_hours"] == 4.0
+        assert night_kwargs["population"] == 30
+        assert night_kwargs["generations"] == 10
+        assert night_kwargs["seed"] == 123
         assert "case-night-42" in night_status.text()
         assert "candidate-001" in night_status.text()
     finally:

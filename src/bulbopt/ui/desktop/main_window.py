@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from bulbopt.app.bootstrap import bootstrap_application
 from bulbopt.storage.filesystem.json_store import JsonStore
 from bulbopt.ui.desktop.case_wizard import CaseWizard
+from bulbopt.ui.desktop.night_run_dialog import NightRunDialog
 
 
 class MainWindow(QMainWindow):
@@ -459,14 +460,19 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._night_run_status_label.setText("Night run: starting NSGA-II (50 pop × 20 gen)...")
+        dialog = NightRunDialog(self)
+        if dialog.exec() != NightRunDialog.Accepted:
+            self._night_run_status_label.setText("Night run: cancelled")
+            return
+        knobs = dialog.values()
+        self._night_run_status_label.setText(
+            f"Night run: starting NSGA-II "
+            f"({knobs['population']} pop × {knobs['generations']} gen, "
+            f"{knobs['budget_hours']} h)..."
+        )
         night_kwargs = {
             **payload,
-            "budget_hours": 8.0,
-            "population": 50,
-            "generations": 20,
-            "high_fidelity_budget": 10,
-            "seed": None,
+            **knobs,
         }
         try:
             summary = night_runner(**night_kwargs)
