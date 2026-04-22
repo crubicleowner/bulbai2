@@ -27,7 +27,7 @@ dev = [
 version = {attr = "bulbopt.__version__"}
 
 [tool.setuptools.package-data]
-bulbopt = ["reporting/templates/*.j2"]
+bulbopt = ["reporting/templates/*.j2", "reporting/templates/*.html"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

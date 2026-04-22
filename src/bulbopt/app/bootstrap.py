@@ -3,6 +3,10 @@
 from pathlib import Path
 
 from bulbopt.application.contracts.models import CreateCaseCommand
+from bulbopt.application.use_cases.run_night_optimization import (
+    NightOptimizationConfig,
+    run_night_optimization,
+)
 from bulbopt.application.use_cases.run_vertical_slice import (
     resume_vertical_slice,
     run_vertical_slice,
@@ -35,10 +39,41 @@ def bootstrap_application(project_root: Path) -> dict:
 
         return StubGeometryAdapter().detect_bulb_region(_Path(source_path))
 
+    def night_runner(**kwargs):
+        """Night optimization entry point.
+
+        Accepts either a CreateCaseCommand payload (``case_name``,
+        ``source_path``, ...) plus night-specific overrides
+        (``budget_hours``, ``population``, ``generations``,
+        ``high_fidelity_budget``, ``seed``).
+        """
+        night_keys = {
+            "budget_hours",
+            "population",
+            "generations",
+            "high_fidelity_budget",
+            "seed",
+        }
+        night_kwargs = {key: kwargs.pop(key) for key in list(kwargs) if key in night_keys}
+        config = NightOptimizationConfig(
+            runtime_budget_hours=float(night_kwargs.get("budget_hours", 8.0)),
+            population=int(night_kwargs.get("population", 50)),
+            generations=int(night_kwargs.get("generations", 20)),
+            high_fidelity_budget=int(night_kwargs.get("high_fidelity_budget", 10)),
+            seed=night_kwargs.get("seed"),
+        )
+        command = CreateCaseCommand(**kwargs)
+        return run_night_optimization(
+            project_root=settings.project_root,
+            command=command,
+            config=config,
+        )
+
     return {
         "settings": settings,
         "run_vertical_slice": runner,
         "resume_vertical_slice": resume,
+        "run_night_optimization": night_runner,
         "list_cases": list_cases,
         "detect_bulb_region": detect_bulb_region,
         "repository": repository,

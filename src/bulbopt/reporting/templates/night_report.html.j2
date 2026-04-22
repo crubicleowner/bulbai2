@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>BulbOpt Night Run — {{ case_name }}</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2em; color: #222; }
+      h1 { margin-bottom: 0; }
+      h2 { margin-top: 1.5em; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+      table { border-collapse: collapse; margin-top: 0.5em; font-size: 0.95em; }
+      th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; }
+      th { background: #f3f3f3; text-align: left; }
+      .narrow td:first-child, .narrow th:first-child { text-align: left; }
+      .pareto-dot { display: inline-block; width: 10px; height: 10px; background: #1e7cbf; border-radius: 50%; margin-right: 4px; }
+      .warn { background: #fff4d6; }
+      .ok { background: #e3f3de; }
+      .note { color: #666; font-size: 0.9em; margin-top: 0.3em; }
+    </style>
+  </head>
+  <body>
+    <h1>BulbOpt Night Run</h1>
+    <p><strong>Case:</strong> {{ case_name }} &mdash; <strong>Status:</strong> {{ status }}</p>
+    <p><strong>Winner:</strong> {{ winner_id or "n/a" }}</p>
+
+    <h2>Run summary</h2>
+    <table class="narrow">
+      <tr><th>Runtime budget (hours)</th><td>{{ runtime_budget_hours }}</td></tr>
+      <tr><th>Population</th><td>{{ population }}</td></tr>
+      <tr><th>Generations</th><td>{{ generations }}</td></tr>
+      <tr><th>High-fidelity budget</th><td>{{ high_fidelity_budget }}</td></tr>
+      <tr><th>Pareto front size</th><td>{{ pareto_size }}</td></tr>
+      <tr><th>High-fidelity evaluated</th><td>{{ high_fidelity_size }}</td></tr>
+      <tr><th>Budget exhausted</th><td>{{ budget_exhausted }}</td></tr>
+      <tr><th>High-fidelity backend</th><td>{{ high_gate_backend }}</td></tr>
+    </table>
+
+    <h2>Gate timings</h2>
+    <table>
+      <thead><tr><th>Gate</th><th>Seconds</th></tr></thead>
+      <tbody>
+        {% for name, seconds in gate_timings.items() %}
+        <tr><td>{{ name }}</td><td>{{ "%.3f"|format(seconds) }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>Pareto front — {{ pareto_size }} candidates</h2>
+    {% if pareto_candidates %}
+    <p class="note">Two objectives minimised: drag proxy (left) and volume delta (right). Lower is better on both.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>drag / Cd</th>
+          <th>volume Δ</th>
+          {% for name in parameter_names %}<th>{{ name }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for candidate in pareto_candidates %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ "%.4f"|format(candidate.objectives[0]) }}</td>
+          <td>{{ "%.4f"|format(candidate.objectives[1]) }}</td>
+          {% for name in parameter_names %}
+          <td>{{ "%.4f"|format(candidate.parameters[name]) }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="note">No Pareto candidates produced (budget exhausted before first generation?).</p>
+    {% endif %}
+
+    <h2>Top high-fidelity candidates ({{ high_fidelity_size }})</h2>
+    {% if high_fidelity %}
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>drag / Cd / Newtons</th>
+          <th>volume Δ</th>
+          <th>STL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for result in high_fidelity %}
+        <tr class="ok">
+          <td>{{ loop.index }}</td>
+          <td>{{ "%.4f"|format(result.objectives[0]) }}</td>
+          <td>{{ "%.4f"|format(result.objectives[1]) }}</td>
+          <td><code>{{ result.stl_path }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="note">No high-fidelity runs were promoted (budget exhausted or high_fidelity_budget=0).</p>
+    {% endif %}
+
+    <h2>Budget trace</h2>
+    <table>
+      <thead><tr><th>#</th><th>Gate</th><th>Seconds</th><th>Cumulative</th></tr></thead>
+      <tbody>
+        {% for entry in budget_trace %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ entry.gate }}</td>
+          <td>{{ "%.3f"|format(entry.seconds) }}</td>
+          <td>{{ "%.3f"|format(entry.cumulative_seconds) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </body>
+</html>

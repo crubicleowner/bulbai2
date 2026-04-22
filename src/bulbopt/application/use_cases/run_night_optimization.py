@@ -37,6 +37,7 @@ from bulbopt.application.contracts.models import CaseSummary, CreateCaseCommand
 from bulbopt.application.use_cases.create_case import create_case
 from bulbopt.domain.core.models import CaseStatus
 from bulbopt.execution.logging.case_logger import CaseLogger
+from bulbopt.infrastructure.adapters.html_report import HtmlReportAdapter
 from bulbopt.infrastructure.adapters.openfoam_adapter import (
     OpenFOAMAdapter,
     detect_openfoam_available,
@@ -231,6 +232,33 @@ def run_night_optimization(
             extra={"winner": winner_id or "n/a"},
         )
 
+        # Stage 5: render the HTML night-run report.
+        try:
+            _render_night_report(
+                case_dir=case_dir,
+                command=command,
+                config=config,
+                result=result,
+                scheduler=scheduler,
+                winner_id=winner_id,
+                high_gate_backend=(
+                    "simple_foam"
+                    if high_fidelity_evaluator is None and detect_openfoam_available()
+                    else ("external" if high_fidelity_evaluator is not None else "surrogate")
+                ),
+            )
+            case_logger.log_stage(
+                stage="build_night_report",
+                status="completed",
+                extra={"path": str(case_dir / "outputs" / "reports" / "night_report.html")},
+            )
+        except Exception as report_error:
+            case_logger.log_stage(
+                stage="build_night_report",
+                status="failed",
+                extra={"error": str(report_error)},
+            )
+
         case.status = (
             CaseStatus.COMPLETED_WITH_WARNINGS
             if result.budget_exhausted
@@ -349,6 +377,73 @@ def _persist_top_candidate_meshes(
             trimesh.exchange.stl.export_stl(deformed)
         )
     return winner_id
+
+
+def _render_night_report(
+    *,
+    case_dir: Path,
+    command: CreateCaseCommand,
+    config: NightOptimizationConfig,
+    result,
+    scheduler,
+    winner_id: str | None,
+    high_gate_backend: str,
+) -> Path:
+    template_root = Path(__file__).resolve().parents[2] / "reporting" / "templates"
+    report = HtmlReportAdapter(template_root=template_root)
+    reports_dir = case_dir / "outputs" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    pareto_candidates = []
+    for c in result.pareto_front.candidates:
+        pareto_candidates.append(
+            {
+                "parameters": dict(c.vector.values),
+                "objectives": list(c.objectives),
+            }
+        )
+
+    high_fidelity = []
+    for index, r in enumerate(result.high_fidelity_results, start=1):
+        candidate_id = f"candidate-{index:03d}"
+        stl_path = case_dir / "outputs" / "top_candidates" / candidate_id / "geometry.stl"
+        high_fidelity.append(
+            {
+                "parameters": dict(r.vector.values),
+                "objectives": list(r.objectives),
+                "stl_path": str(stl_path.relative_to(case_dir)),
+            }
+        )
+
+    status = (
+        "completed_with_warnings" if result.budget_exhausted else "completed"
+    )
+    context = {
+        "case_name": command.case_name,
+        "status": status,
+        "winner_id": winner_id,
+        "runtime_budget_hours": config.runtime_budget_hours,
+        "population": config.population,
+        "generations": config.generations,
+        "high_fidelity_budget": config.high_fidelity_budget,
+        "pareto_size": len(pareto_candidates),
+        "high_fidelity_size": len(high_fidelity),
+        "budget_exhausted": result.budget_exhausted,
+        "gate_timings": scheduler.gate_timings(),
+        "pareto_candidates": pareto_candidates,
+        "high_fidelity": high_fidelity,
+        "budget_trace": scheduler.trace(),
+        "high_gate_backend": high_gate_backend,
+        "parameter_names": list(KRACHT_PARAMETER_NAMES),
+    }
+
+    # The HtmlReportAdapter writes report.html via a hard-coded template
+    # name; for the night report we render via its raw Jinja environment
+    # and write to night_report.html beside it.
+    template = report.environment.get_template("night_report.html.j2")
+    output_path = reports_dir / "night_report.html"
+    output_path.write_text(template.render(**context), encoding="utf-8")
+    return output_path
 
 
 def _mesh_volume(mesh: trimesh.Trimesh) -> float:

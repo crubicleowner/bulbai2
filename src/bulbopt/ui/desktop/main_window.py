@@ -62,6 +62,8 @@ class MainWindow(QMainWindow):
         self._resume_case_button: QPushButton | None = None
         self._detect_bulb_region_button: QPushButton | None = None
         self._bulb_region_preview_label: QLabel | None = None
+        self._night_run_button: QPushButton | None = None
+        self._night_run_status_label: QLabel | None = None
         self._last_case_dir: Path | None = None
         self._last_report_path: Path | None = None
         self._last_best_candidate_path: Path | None = None
@@ -84,6 +86,15 @@ class MainWindow(QMainWindow):
         self._detect_bulb_region_button = QPushButton("Detect Bulb Region", central_widget)
         self._detect_bulb_region_button.setObjectName("detect_bulb_region_button")
         self._detect_bulb_region_button.clicked.connect(self._detect_bulb_region)
+
+        self._night_run_button = QPushButton("Night Run (NSGA-II)", central_widget)
+        self._night_run_button.setObjectName("night_run_button")
+        self._night_run_button.clicked.connect(self._run_night_optimization)
+        self._night_run_status_label = QLabel(
+            "Night run: idle",
+            central_widget,
+        )
+        self._night_run_status_label.setObjectName("night_run_status_label")
         self._bulb_region_preview_label = QLabel(
             "Bulb region preview: not detected yet",
             central_widget,
@@ -236,6 +247,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._case_wizard)
         layout.addWidget(self._detect_bulb_region_button)
         layout.addWidget(self._bulb_region_preview_label)
+        layout.addWidget(self._night_run_button)
+        layout.addWidget(self._night_run_status_label)
         layout.addWidget(run_button)
         layout.addWidget(self._run_status_label)
         layout.addWidget(results_label)
@@ -421,6 +434,58 @@ class MainWindow(QMainWindow):
                 self._last_case_package_path = None
         if self._open_case_package_button is not None:
             self._open_case_package_button.setEnabled(self._last_case_package_path is not None)
+        self._refresh_case_history()
+
+    def _run_night_optimization(self) -> None:
+        """Kick off the NSGA-II night run with default GA budget.
+
+        For the first UI pass we reuse the Case Wizard's vessel metadata
+        and hardcode a modest NSGA-II budget suitable for a quick demo.
+        When the desktop grows a proper dialog, these knobs will become
+        user inputs (spec §11.1).
+        """
+        if self._case_wizard is None or self._night_run_status_label is None:
+            return
+        night_runner = self.services.get("run_night_optimization")
+        if not callable(night_runner):
+            self._night_run_status_label.setText("Night run: service unavailable")
+            return
+
+        payload = self._case_wizard.payload()
+        source_path = str(payload.get("source_path") or "")
+        if not source_path:
+            self._night_run_status_label.setText(
+                "Night run: please select a source STL first"
+            )
+            return
+
+        self._night_run_status_label.setText("Night run: starting NSGA-II (50 pop × 20 gen)...")
+        night_kwargs = {
+            **payload,
+            "budget_hours": 8.0,
+            "population": 50,
+            "generations": 20,
+            "high_fidelity_budget": 10,
+            "seed": None,
+        }
+        try:
+            summary = night_runner(**night_kwargs)
+        except Exception as error:
+            self._night_run_status_label.setText(f"Night run failed: {error}")
+            self._refresh_case_history()
+            return
+
+        self._last_case_dir = self.services["settings"].project_root / summary.case_id
+        self._last_report_path = self._last_case_dir / "outputs" / "reports" / "night_report.html"
+        status_label = summary.status if summary.status else "Completed"
+        self._night_run_status_label.setText(
+            f"Night run {status_label}: {summary.case_id} "
+            f"winner={summary.best_candidate_id or 'n/a'}"
+        )
+        if self._open_case_button is not None:
+            self._open_case_button.setEnabled(True)
+        if self._open_report_button is not None:
+            self._open_report_button.setEnabled(True)
         self._refresh_case_history()
 
     def _detect_bulb_region(self) -> None:

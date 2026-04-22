@@ -613,6 +613,67 @@ def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, mon
         app.processEvents()
 
 
+def test_main_window_night_run_button_invokes_service_and_updates_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Spec §11.1: engineer clicks Night Run; the desktop hands the wizard
+    payload (plus default NSGA-II knobs) to services['run_night_optimization']
+    and surfaces the winner case_id / candidate id in a status label."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    calls: list[dict] = []
+
+    def fake_night_runner(**kwargs):
+        calls.append(kwargs)
+        return CaseSummary(
+            case_id="case-night-42",
+            case_name=str(kwargs["case_name"]),
+            status="completed",
+            best_candidate_id="candidate-001",
+        )
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": lambda **_k: CaseSummary(
+                case_id="vs",
+                case_name="unused",
+                status="completed",
+                best_candidate_id=None,
+            ),
+            "list_cases": lambda: [],
+            "run_night_optimization": fake_night_runner,
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+    try:
+        central_widget = window.centralWidget()
+        night_button = central_widget.findChild(QPushButton, "night_run_button")
+        night_status = central_widget.findChild(QLabel, "night_run_status_label")
+        assert night_button is not None
+        assert night_status is not None
+        assert "idle" in night_status.text().lower()
+
+        night_button.click()
+        app.processEvents()
+
+        assert len(calls) == 1
+        # NSGA-II defaults must be threaded through when the user hasn't
+        # configured a dialog yet.
+        night_kwargs = calls[0]
+        assert night_kwargs["budget_hours"] == 8.0
+        assert night_kwargs["population"] == 50
+        assert night_kwargs["generations"] == 20
+        assert "case-night-42" in night_status.text()
+        assert "candidate-001" in night_status.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_detect_bulb_region_button_populates_preview_label(
     tmp_path: Path, monkeypatch
 ) -> None:

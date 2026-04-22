@@ -127,6 +127,45 @@ def test_run_night_optimization_summary_points_at_winner(tmp_path: Path) -> None
     assert (winner_dir / "geometry.stl").exists()
 
 
+def test_run_night_optimization_writes_night_report_html(tmp_path: Path) -> None:
+    """Stage 5 renders a Jinja template describing the Pareto front, gate
+    timings, and high-fidelity winners."""
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+
+    summary = run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-report",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=6,
+            generations=2,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+            seed=13,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    report_path = case_dir / "outputs" / "reports" / "night_report.html"
+    assert report_path.exists()
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "BulbOpt Night Run" in report_text
+    assert "Pareto front" in report_text
+    assert "Gate timings" in report_text
+    # Report must mention at least one Kracht parameter name.
+    assert "length_ratio" in report_text
+
+
 def test_run_night_optimization_uses_simple_foam_gate_when_openfoam_detected(
     tmp_path: Path, monkeypatch
 ) -> None:
