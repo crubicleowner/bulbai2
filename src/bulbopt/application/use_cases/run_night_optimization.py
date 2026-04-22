@@ -37,6 +37,12 @@ from bulbopt.application.contracts.models import CaseSummary, CreateCaseCommand
 from bulbopt.application.use_cases.create_case import create_case
 from bulbopt.domain.core.models import CaseStatus
 from bulbopt.execution.logging.case_logger import CaseLogger
+from bulbopt.infrastructure.adapters.openfoam_adapter import (
+    OpenFOAMAdapter,
+    detect_openfoam_available,
+)
+from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
+from bulbopt.infrastructure.adapters.simple_foam_gate import SimpleFoamHighFidelityGate
 from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
 from bulbopt.optimization.parametric.kracht_space import (
@@ -112,9 +118,34 @@ def run_night_optimization(
             evaluate=_mid_gate_evaluator(repaired_mesh, region, deformer),
             estimated_seconds_per_eval=config.mid_gate_estimated_seconds_per_eval,
         )
-        high_eval = high_fidelity_evaluator or _default_high_evaluator(
-            repaired_mesh, region, deformer
-        )
+        if high_fidelity_evaluator is not None:
+            high_eval = high_fidelity_evaluator
+        elif detect_openfoam_available():
+            case_logger.log_stage(
+                stage="high_gate",
+                status="initialised",
+                extra={"backend": "simple_foam"},
+            )
+            foam_work_root = case_dir / "working" / "night_optimization" / "foam_candidates"
+            foam_work_root.mkdir(parents=True, exist_ok=True)
+            builder = OpenFOAMAdapter()
+            runner = OpenFOAMRunnerAdapter()
+            foam_gate = SimpleFoamHighFidelityGate(
+                work_root=foam_work_root,
+                baseline_mesh=repaired_mesh,
+                region=region,
+                deformer=deformer,
+                build_case=builder.build_case,
+                run_case=runner.run_case,
+            )
+            high_eval = foam_gate.evaluate
+        else:
+            case_logger.log_stage(
+                stage="high_gate",
+                status="initialised",
+                extra={"backend": "surrogate", "reason": "openfoam_unavailable"},
+            )
+            high_eval = _default_high_evaluator(repaired_mesh, region, deformer)
         high_gate = Gate(
             name="high",
             evaluate=high_eval,

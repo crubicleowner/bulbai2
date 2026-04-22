@@ -127,6 +127,70 @@ def test_run_night_optimization_summary_points_at_winner(tmp_path: Path) -> None
     assert (winner_dir / "geometry.stl").exists()
 
 
+def test_run_night_optimization_uses_simple_foam_gate_when_openfoam_detected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When ``detect_openfoam_available`` returns True, the use case wires
+    SimpleFoamHighFidelityGate as the high-fidelity evaluator without
+    requiring the caller to pass one. Runs real FFD + case building but
+    mocks the OpenFOAM runner so tests stay fast."""
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+
+    # Force detection True at the import site used by the use case, and
+    # mock the runner to return executed_ok.
+    from bulbopt.application.use_cases import run_night_optimization as use_case_module
+    from bulbopt.infrastructure.adapters import openfoam_runner
+
+    monkeypatch.setattr(
+        use_case_module, "detect_openfoam_available", lambda: True
+    )
+
+    run_calls: list[dict] = []
+
+    def fake_run(self, case_dir, *, case_manifest=None, execute=False, timeout_seconds=600):
+        run_calls.append({"case_dir": case_dir, "execute": execute})
+        return {
+            "status": "executed_ok",
+            "is_recoverable": True,
+            "high_fidelity_used": True,
+            "executed_steps": [],
+        }
+
+    monkeypatch.setattr(
+        openfoam_runner.OpenFOAMRunnerAdapter,
+        "run_case",
+        fake_run,
+    )
+
+    summary = run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-foam",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=2,
+            high_fidelity_budget=2,
+            runtime_budget_hours=1.0,
+            seed=3,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+        ),
+    )
+
+    assert summary.status in {"completed", "completed_with_warnings"}
+    # At least one high-fidelity run was invoked through the real gate.
+    assert len(run_calls) >= 1
+    assert all(call["execute"] for call in run_calls)
+
+
 def test_run_night_optimization_persists_case_json_with_recoverable_flag(
     tmp_path: Path,
 ) -> None:
