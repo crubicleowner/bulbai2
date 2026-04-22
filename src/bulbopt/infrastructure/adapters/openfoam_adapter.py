@@ -88,9 +88,11 @@ class OpenFOAMAdapter:
         tri_surface_dir = openfoam_case_dir / "constant" / "triSurface"
         system_dir = openfoam_case_dir / "system"
         constant_dir = openfoam_case_dir / "constant"
+        zero_dir = openfoam_case_dir / "0"
         tri_surface_dir.mkdir(parents=True, exist_ok=True)
         system_dir.mkdir(parents=True, exist_ok=True)
         constant_dir.mkdir(parents=True, exist_ok=True)
+        zero_dir.mkdir(parents=True, exist_ok=True)
 
         target_stl = tri_surface_dir / "best_candidate.stl"
         shutil.copyfile(best_candidate_geometry_path, target_stl)
@@ -101,6 +103,13 @@ class OpenFOAMAdapter:
         (system_dir / "fvSchemes").write_text(self._fv_schemes(), encoding="utf-8")
         (system_dir / "fvSolution").write_text(self._fv_solution(), encoding="utf-8")
         (constant_dir / "transportProperties").write_text(self._transport_properties(), encoding="utf-8")
+        (constant_dir / "turbulenceProperties").write_text(self._turbulence_properties(), encoding="utf-8")
+        # Initial fields for simpleFoam (k-omega SST).
+        (zero_dir / "U").write_text(self._initial_U(), encoding="utf-8")
+        (zero_dir / "p").write_text(self._initial_p(), encoding="utf-8")
+        (zero_dir / "k").write_text(self._initial_k(), encoding="utf-8")
+        (zero_dir / "omega").write_text(self._initial_omega(), encoding="utf-8")
+        (zero_dir / "nut").write_text(self._initial_nut(), encoding="utf-8")
 
         manifest = {
             "adapter": "openfoam",
@@ -132,7 +141,7 @@ class OpenFOAMAdapter:
             "startFrom           startTime;\n"
             "startTime           0;\n"
             "stopAt              endTime;\n"
-            "endTime             500;\n"
+            "endTime             200;\n"
             "deltaT              1;\n"
             "writeControl        timeStep;\n"
             "writeInterval       100;\n"
@@ -143,6 +152,135 @@ class OpenFOAMAdapter:
             "timeFormat          general;\n"
             "timePrecision       6;\n"
             "runTimeModifiable   false;\n"
+            "\n"
+            "functions\n"
+            "{\n"
+            "    forceCoeffs\n"
+            "    {\n"
+            "        type            forceCoeffs;\n"
+            "        libs            (forces);\n"
+            "        writeControl    timeStep;\n"
+            "        writeInterval   10;\n"
+            "        patches         (hull);\n"
+            "        rho             rhoInf;\n"
+            "        rhoInf          1000;\n"
+            "        liftDir         (0 0 1);\n"
+            "        dragDir         (1 0 0);\n"
+            "        CofR            (0 0 0);\n"
+            "        pitchAxis       (0 1 0);\n"
+            "        magUInf         5.0;\n"
+            "        lRef            10;\n"
+            "        Aref            10;\n"
+            "    }\n"
+            "}\n"
+        )
+
+    def _turbulence_properties(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       dictionary;\n"
+            "    object      turbulenceProperties;\n"
+            "}\n"
+            "simulationType  RAS;\n"
+            "RAS\n"
+            "{\n"
+            "    RASModel        kOmegaSST;\n"
+            "    turbulence      on;\n"
+            "    printCoeffs     on;\n"
+            "}\n"
+        )
+
+    def _initial_U(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       volVectorField;\n"
+            "    object      U;\n"
+            "}\n"
+            "dimensions      [0 1 -1 0 0 0 0];\n"
+            "internalField   uniform (5 0 0);\n"
+            "boundaryField\n"
+            "{\n"
+            "    hull    { type fixedValue; value uniform (0 0 0); }\n"
+            "    \".*\"   { type fixedValue; value uniform (5 0 0); }\n"
+            "}\n"
+        )
+
+    def _initial_p(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       volScalarField;\n"
+            "    object      p;\n"
+            "}\n"
+            "dimensions      [0 2 -2 0 0 0 0];\n"
+            "internalField   uniform 0;\n"
+            "boundaryField\n"
+            "{\n"
+            "    hull    { type zeroGradient; }\n"
+            "    \".*\"   { type fixedValue; value uniform 0; }\n"
+            "}\n"
+        )
+
+    def _initial_k(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       volScalarField;\n"
+            "    object      k;\n"
+            "}\n"
+            "dimensions      [0 2 -2 0 0 0 0];\n"
+            "internalField   uniform 0.375;\n"
+            "boundaryField\n"
+            "{\n"
+            "    hull    { type kqRWallFunction; value uniform 0.375; }\n"
+            "    \".*\"   { type fixedValue; value uniform 0.375; }\n"
+            "}\n"
+        )
+
+    def _initial_omega(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       volScalarField;\n"
+            "    object      omega;\n"
+            "}\n"
+            "dimensions      [0 0 -1 0 0 0 0];\n"
+            "internalField   uniform 3.0;\n"
+            "boundaryField\n"
+            "{\n"
+            "    hull    { type omegaWallFunction; value uniform 3.0; }\n"
+            "    \".*\"   { type fixedValue; value uniform 3.0; }\n"
+            "}\n"
+        )
+
+    def _initial_nut(self) -> str:
+        return (
+            "FoamFile\n"
+            "{\n"
+            "    version     2.0;\n"
+            "    format      ascii;\n"
+            "    class       volScalarField;\n"
+            "    object      nut;\n"
+            "}\n"
+            "dimensions      [0 2 -1 0 0 0 0];\n"
+            "internalField   uniform 0;\n"
+            "boundaryField\n"
+            "{\n"
+            "    hull    { type nutkWallFunction; value uniform 0; }\n"
+            "    \".*\"   { type calculated; value uniform 0; }\n"
+            "}\n"
         )
 
     def _fv_schemes(self) -> str:

@@ -9,6 +9,49 @@ from bulbopt.infrastructure.adapters.openfoam_adapter import OpenFOAMAdapter
 from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
 
 
+def test_openfoam_adapter_writes_initial_fields_and_force_coeffs_fo(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Spec §9: the high-fidelity gate needs simpleFoam to actually solve
+    the flow, which requires (a) a 0/ time directory with U and p initial
+    conditions, (b) transportProperties + turbulenceProperties, and
+    (c) a forceCoeffs function object embedded in controlDict so the
+    run emits postProcessing/forces/<time>/coefficient.dat."""
+    case_dir = tmp_path / "case"
+    geometry_path = case_dir / "candidate.stl"
+    geometry_path.parent.mkdir(parents=True, exist_ok=True)
+    geometry_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+
+    builder = OpenFOAMAdapter()
+    monkeypatch.setattr(builder, "is_available", lambda: True)
+    builder.build_case(
+        case_dir,
+        best_candidate_id="candidate-init",
+        best_candidate_geometry_path=geometry_path,
+    )
+
+    of_case_dir = case_dir / "working" / "openfoam_case"
+
+    # Initial fields for simpleFoam.
+    assert (of_case_dir / "0" / "U").exists()
+    assert (of_case_dir / "0" / "p").exists()
+    assert (of_case_dir / "0" / "k").exists()
+    assert (of_case_dir / "0" / "omega").exists()
+    assert (of_case_dir / "0" / "nut").exists()
+
+    # Thermo/turbulence constants.
+    assert (of_case_dir / "constant" / "transportProperties").exists()
+    assert (of_case_dir / "constant" / "turbulenceProperties").exists()
+
+    # controlDict must reference the forceCoeffs function object so the
+    # solver writes coefficient.dat without extra setup.
+    control_dict = (of_case_dir / "system" / "controlDict").read_text(encoding="utf-8")
+    assert "functions" in control_dict
+    assert "forceCoeffs" in control_dict
+    assert "patches" in control_dict
+
+
 def test_openfoam_runner_invokes_solver_via_absolute_path_when_bin_dir_configured(
     tmp_path: Path,
     monkeypatch,
@@ -229,6 +272,55 @@ def test_openfoam_runner_writes_full_solver_logs_to_case_logs_dir(
     assert executed and "stdout_log" in executed[0]
     assert executed[0]["stdout_log"].endswith("blockMesh.log")
     assert executed[0]["stderr_log"].endswith("blockMesh.err.log")
+
+
+def test_openfoam_runner_includes_simple_foam_in_default_solver_chain(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Real drag numbers require simpleFoam to follow mesh generation."""
+    import subprocess as subprocess_module
+
+    case_dir = tmp_path / "case"
+    geometry_path = case_dir / "candidate.stl"
+    geometry_path.parent.mkdir(parents=True, exist_ok=True)
+    geometry_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+
+    builder = OpenFOAMAdapter()
+    monkeypatch.setattr(builder, "is_available", lambda: True)
+    manifest = builder.build_case(
+        case_dir,
+        best_candidate_id="candidate-sf",
+        best_candidate_geometry_path=geometry_path,
+    )
+
+    runner = OpenFOAMRunnerAdapter()
+    monkeypatch.setattr(runner, "is_available", lambda: True)
+
+    invocations: list[list[str]] = []
+
+    class _FakeProc:
+        def __init__(self, args, rc=0, out="", err=""):
+            self.args, self.returncode, self.stdout, self.stderr = args, rc, out, err
+
+    def fake_run(args, **kwargs):
+        invocations.append(list(args))
+        return _FakeProc(args, 0)
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    runner.run_case(
+        case_dir / "working" / "openfoam_case",
+        case_manifest=manifest,
+        execute=True,
+    )
+
+    commands = [cmd[0] for cmd in invocations]
+    # simpleFoam must appear after blockMesh + snappyHexMesh.
+    commands_lower = [c.lower() for c in commands]
+    assert any("blockmesh" in c for c in commands_lower)
+    assert any("snappyhexmesh" in c for c in commands_lower)
+    assert any("simplefoam" in c for c in commands_lower)
 
 
 def test_openfoam_runner_executes_solver_chain_when_available(

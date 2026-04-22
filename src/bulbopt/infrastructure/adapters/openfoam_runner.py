@@ -18,6 +18,7 @@ class OpenFOAMRunnerAdapter:
     DEFAULT_SOLVER_CHAIN: tuple[tuple[str, ...], ...] = (
         ("blockMesh",),
         ("snappyHexMesh", "-overwrite"),
+        ("simpleFoam",),
     )
 
     def is_available(self) -> bool:
