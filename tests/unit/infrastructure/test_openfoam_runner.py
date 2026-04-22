@@ -158,6 +158,79 @@ def test_openfoam_runner_prepends_configured_bin_dir_to_subprocess_path(
         f"Expected configured bin dir to be the first PATH entry; got: {first_path[:200]}"
 
 
+def test_openfoam_runner_writes_full_solver_logs_to_case_logs_dir(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Spec §9 logs/ directory: the full stdout/stderr of each solver step
+    must be persisted to ``case_dir/logs/openfoam/<solver>.log`` (and
+    ``.err.log``) so an engineer can tail or grep them later without
+    rerunning. The manifest keeps the truncated tails for the quick-look
+    UI but the files hold the complete output.
+    """
+    import subprocess as subprocess_module
+
+    case_dir = tmp_path / "case-log"
+    geometry_path = case_dir / "candidate.stl"
+    geometry_path.parent.mkdir(parents=True, exist_ok=True)
+    geometry_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+
+    builder = OpenFOAMAdapter()
+    monkeypatch.setattr(builder, "is_available", lambda: True)
+    manifest = builder.build_case(
+        case_dir,
+        best_candidate_id="candidate-log",
+        best_candidate_geometry_path=geometry_path,
+    )
+
+    runner = OpenFOAMRunnerAdapter()
+    monkeypatch.setattr(runner, "is_available", lambda: True)
+
+    long_stdout = "HEADER\n" + ("x" * 5000) + "\nFOOTER"
+    long_stderr = "WARN\n" + ("y" * 3500)
+
+    class _FakeCompletedProcess:
+        def __init__(self, args, returncode, stdout, stderr):
+            self.args = args
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(args, **kwargs):
+        if args[0].lower().endswith("blockmesh") or args[0].lower().endswith("blockmesh.exe"):
+            return _FakeCompletedProcess(args, 0, long_stdout, long_stderr)
+        return _FakeCompletedProcess(args, 0, "snap OK", "")
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    result = runner.run_case(
+        case_dir / "working" / "openfoam_case",
+        case_manifest=manifest,
+        execute=True,
+    )
+
+    logs_dir = case_dir / "logs" / "openfoam"
+    assert logs_dir.is_dir(), "Expected logs/openfoam/ to be created"
+    block_log = logs_dir / "blockMesh.log"
+    block_err = logs_dir / "blockMesh.err.log"
+    snap_log = logs_dir / "snappyHexMesh.log"
+    assert block_log.exists()
+    assert block_err.exists()
+    assert snap_log.exists()
+
+    # Full content preserved (not truncated to 2000 chars like the tail).
+    assert "HEADER" in block_log.read_text(encoding="utf-8")
+    assert "FOOTER" in block_log.read_text(encoding="utf-8")
+    assert len(block_log.read_text(encoding="utf-8")) > 2000
+    assert len(block_err.read_text(encoding="utf-8")) > 2000
+
+    # Manifest references the log files for each step.
+    executed = result.get("executed_steps", [])
+    assert executed and "stdout_log" in executed[0]
+    assert executed[0]["stdout_log"].endswith("blockMesh.log")
+    assert executed[0]["stderr_log"].endswith("blockMesh.err.log")
+
+
 def test_openfoam_runner_executes_solver_chain_when_available(
     tmp_path: Path,
     monkeypatch,

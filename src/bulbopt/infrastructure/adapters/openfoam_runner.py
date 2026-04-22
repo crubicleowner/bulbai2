@@ -85,6 +85,14 @@ class OpenFOAMRunnerAdapter:
         overall_returncode = 0
         failing_step: str | None = None
 
+        # Per-solver log directory lives next to the case log (spec §9):
+        #   <case_dir>/logs/openfoam/<solver>.log + .err.log
+        # openfoam_case_dir is <case_dir>/working/openfoam_case so
+        # parents[1] == <case_dir>.
+        case_dir = openfoam_case_dir.parents[1]
+        solver_logs_dir = case_dir / "logs" / "openfoam"
+        solver_logs_dir.mkdir(parents=True, exist_ok=True)
+
         # Build subprocess env with the configured OpenFOAM bin directory
         # prepended to PATH. On Windows with non-ASCII install paths, switch
         # both cwd and bin_dir to their 8.3 short form so the MinGW dynamic
@@ -113,6 +121,9 @@ class OpenFOAMRunnerAdapter:
 
         for command in self.DEFAULT_SOLVER_CHAIN:
             resolved_command = self._resolve_command(command, short_bin)
+            solver_name = command[0]
+            stdout_log_path = solver_logs_dir / f"{solver_name}.log"
+            stderr_log_path = solver_logs_dir / f"{solver_name}.err.log"
             try:
                 completed = subprocess.run(
                     resolved_command,
@@ -123,11 +134,17 @@ class OpenFOAMRunnerAdapter:
                     timeout=timeout_seconds,
                     check=False,
                 )
+                stdout_text = completed.stdout or ""
+                stderr_text = completed.stderr or ""
+                stdout_log_path.write_text(stdout_text, encoding="utf-8")
+                stderr_log_path.write_text(stderr_text, encoding="utf-8")
                 step = {
                     "command": list(command),
                     "returncode": int(completed.returncode),
-                    "stdout_tail": (completed.stdout or "")[-2000:],
-                    "stderr_tail": (completed.stderr or "")[-2000:],
+                    "stdout_tail": stdout_text[-2000:],
+                    "stderr_tail": stderr_text[-2000:],
+                    "stdout_log": str(stdout_log_path),
+                    "stderr_log": str(stderr_log_path),
                 }
                 executed_steps.append(step)
                 if completed.returncode != 0:
@@ -135,11 +152,15 @@ class OpenFOAMRunnerAdapter:
                     failing_step = command[0]
                     break
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+                error_text = str(exc)
+                stderr_log_path.write_text(error_text, encoding="utf-8")
                 executed_steps.append(
                     {
                         "command": list(command),
                         "returncode": -1,
-                        "error": str(exc),
+                        "error": error_text,
+                        "stdout_log": str(stdout_log_path),
+                        "stderr_log": str(stderr_log_path),
                     }
                 )
                 overall_returncode = -1
