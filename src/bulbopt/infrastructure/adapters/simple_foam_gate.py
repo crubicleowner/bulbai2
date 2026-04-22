@@ -163,8 +163,19 @@ def _read_force_coeffs(
     but we pick the most recently modified one so the parser works for
     restarted cases too.
     """
-    forces_root = foam_case_dir / "postProcessing" / "forces"
-    if not forces_root.exists():
+    # OpenFOAM writes the output under a directory named after the
+    # function object key in controlDict.functions. Our adapter uses
+    # ``forceCoeffs`` (see openfoam_adapter._control_dict); earlier
+    # tutorials used ``forces``. Check both, newest first.
+    post_root = foam_case_dir / "postProcessing"
+    if not post_root.exists():
+        return None
+    candidate_roots = [
+        post_root / "forceCoeffs",
+        post_root / "forces",
+    ]
+    forces_root = next((c for c in candidate_roots if c.exists()), None)
+    if forces_root is None:
         return None
     subdirs = [p for p in forces_root.iterdir() if p.is_dir()]
     if not subdirs:
