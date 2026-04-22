@@ -123,6 +123,39 @@ def test_run_cli_resume_command_reuses_checkpoints(
     assert case_payload["is_recoverable"] is False
 
 
+def test_run_cli_night_run_command_writes_pareto_artifacts(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Smoke test: night-run subcommand flows through to
+    run_night_optimization and produces the pareto_front.json artifact."""
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+    project_root = tmp_path / "projects"
+
+    exit_code = run_cli(
+        [
+            "night-run",
+            "--source", str(source_path),
+            "--project", str(project_root),
+            "--case-name", "night-cli",
+            "--budget-hours", "0.01",
+            "--population", "6",
+            "--generations", "2",
+            "--high-fidelity-budget", "1",
+            "--seed", "99",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "night-cli" in captured.out or "case_id=" in captured.out
+    # One case in project_root.
+    cases = list(project_root.iterdir())
+    assert len(cases) == 1
+    case_dir = cases[0]
+    pareto = case_dir / "working" / "night_optimization" / "pareto_front.json"
+    assert pareto.exists()
+
+
 def test_run_cli_without_arguments_shows_usage_and_returns_nonzero(
     capsys: pytest.CaptureFixture,
 ) -> None:

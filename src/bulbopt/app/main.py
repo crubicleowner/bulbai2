@@ -64,6 +64,19 @@ def run_cli(argv: list[str]) -> int:
     resume_parser.add_argument("--project", required=True)
     resume_parser.add_argument("--case", required=True)
 
+    night_parser = subparsers.add_parser(
+        "night-run",
+        help="Run multi-objective NSGA-II night optimization across a Kracht bulb space",
+    )
+    night_parser.add_argument("--source", required=True, help="Source STL path")
+    night_parser.add_argument("--project", required=True, help="Project root directory")
+    night_parser.add_argument("--case-name", default="night-run", help="Case name")
+    night_parser.add_argument("--budget-hours", type=float, default=8.0)
+    night_parser.add_argument("--population", type=int, default=50)
+    night_parser.add_argument("--generations", type=int, default=20)
+    night_parser.add_argument("--high-fidelity-budget", type=int, default=10)
+    night_parser.add_argument("--seed", type=int, default=None)
+
     if not argv:
         parser.print_help(sys.stderr)
         return 2
@@ -131,6 +144,45 @@ def run_cli(argv: list[str]) -> int:
         print(
             f"{summary.status}: case_id={summary.case_id} "
             f"best={summary.best_candidate_id or 'n/a'}"
+        )
+        return 0
+
+    if namespace.command == "night-run":
+        from bulbopt.application.contracts.models import CreateCaseCommand
+        from bulbopt.application.use_cases.run_night_optimization import (
+            NightOptimizationConfig,
+            run_night_optimization,
+        )
+
+        project_root = Path(namespace.project)
+        command = CreateCaseCommand(
+            case_name=namespace.case_name,
+            source_path=str(Path(namespace.source).resolve()),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        )
+        config = NightOptimizationConfig(
+            population=int(namespace.population),
+            generations=int(namespace.generations),
+            high_fidelity_budget=int(namespace.high_fidelity_budget),
+            runtime_budget_hours=float(namespace.budget_hours),
+            seed=namespace.seed,
+        )
+        try:
+            summary = run_night_optimization(
+                project_root=project_root,
+                command=command,
+                config=config,
+            )
+        except Exception as error:
+            print(f"Night run failed: {error}", file=sys.stderr)
+            return 1
+        print(
+            f"{summary.status}: case_id={summary.case_id} "
+            f"winner={summary.best_candidate_id or 'n/a'}"
         )
         return 0
 
