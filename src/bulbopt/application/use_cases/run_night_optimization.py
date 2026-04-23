@@ -1,6 +1,9 @@
 """``run_night_optimization`` — night-run entry point.
 
 Design reference: 2026-04-22-bulbopt-night-optimization-design.md §11.
+Mesh-quality follow-ups: 2026-04-23-bulbopt-mesh-quality-design.md §4
+(L1 history + GP warm start, L2 quality objective, L4 validity prefilter,
+L6 STL sanity export).
 
 End-to-end flow:
 
@@ -9,7 +12,10 @@ End-to-end flow:
   2. Run ``prepare_geometry`` once to detect the bulb region and write
      ``working/repaired/repaired.stl``.
   3. Build a cascade:
-       * mid gate = cheap mesh-derived proxy (slenderness vs. volume)
+       * mid gate = cheap mesh-derived proxy (slenderness vs. volume
+         + mesh quality); GP surrogate replaces objective[0] when enough
+         history exists; validity prefilter rejects obviously broken
+         candidates before the deformer runs.
        * high gate = caller-supplied (defaults to a numeric proxy)
      NSGA-II explores the Kracht space, the scheduler tracks time.
   4. Persist:
@@ -17,7 +23,8 @@ End-to-end flow:
        * ``working/night_optimization/high_fidelity_results.json``
        * ``working/night_optimization/budget_trace.json``
   5. Export the top-ranked high-fidelity STL + each Pareto candidate STL
-     under ``outputs/top_candidates/candidate-XXX/``.
+     under ``outputs/top_candidates/candidate-XXX/`` plus a
+     ``stl_valid.json`` sanity report (L6).
   6. Update the case to ``completed`` / ``completed_with_warnings`` and
      return a ``CaseSummary`` pointing at the winner.
 
@@ -44,11 +51,18 @@ from bulbopt.infrastructure.adapters.openfoam_adapter import (
 )
 from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
 from bulbopt.infrastructure.adapters.simple_foam_gate import SimpleFoamHighFidelityGate
+from bulbopt.infrastructure.adapters.stl_sanity import validate_stl
 from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
+from bulbopt.optimization.learning.gp_surrogate import GPSurrogate, MIN_TRAIN_POINTS
+from bulbopt.optimization.learning.history_store import (
+    HistoryStore,
+    default_history_path,
+)
 from bulbopt.optimization.learning.validity_classifier import (
     MIN_TRAINING_SAMPLES,
     ValidityClassifier,
 )
+from bulbopt.optimization.quality.mesh_metrics import compute_mesh_quality
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
 from bulbopt.optimization.parametric.kracht_space import (
     KRACHT_PARAMETER_NAMES,
@@ -87,12 +101,21 @@ class NightOptimizationConfig:
     seed: int | None = None
     mid_gate_estimated_seconds_per_eval: float = 5.0
     high_gate_estimated_seconds_per_eval: float = 300.0
-    # Validity classifier prefilter (spec 2026-04-23 §4 L4). Enabled by
-    # default; reject candidates whose predicted p(invalid) exceeds the
-    # threshold. Set ``enable_validity_prefilter=False`` to disable (e.g.
-    # when sanity-check costs dominate prediction accuracy).
+    # L4: validity classifier prefilter. Enabled by default; reject
+    # candidates whose predicted p(invalid) exceeds the threshold. Set
+    # ``enable_validity_prefilter=False`` to disable (e.g. when sanity-
+    # check costs dominate prediction accuracy).
     enable_validity_prefilter: bool = True
     validity_reject_threshold: float = 0.7
+    # L1: number of best historical vectors to seed the initial GA
+    # population with. Falls back to pure random sampling if the history
+    # store is empty.
+    warm_start_top_k: int = 10
+    # L1: minimum history size before the GP surrogate replaces the
+    # analytic mid-gate proxy.
+    gp_surrogate_min_history: int = 20
+    # L1: override the history path (default ``~/.bulbopt/history.jsonl``)
+    history_path: Path | None = None
 
 
 def run_night_optimization(
@@ -131,20 +154,52 @@ def run_night_optimization(
         )
         region = geometry_analysis["bulb_region"]
 
-        # Load / train validity classifier from prior HF history (spec
-        # 2026-04-23 §4 L4). When the project has fewer than
-        # MIN_TRAINING_SAMPLES examples this becomes a no-op; the wrapper
-        # still records new labels so the next run benefits.
-        history_path = _validity_history_path(project_root)
-        validity_classifier = _load_and_train_validity_classifier(history_path)
+        # L4: load / train validity classifier from prior HF history.
+        # When the project has fewer than MIN_TRAINING_SAMPLES examples
+        # this becomes a no-op; the wrapper still records new labels so
+        # the next run benefits.
+        validity_history_path = _validity_history_path(project_root)
+        validity_classifier = _load_and_train_validity_classifier(validity_history_path)
+
+        # L1: load historical (vector, cd) pairs for warm-start + GP.
+        history_store = HistoryStore(
+            path=config.history_path if config.history_path is not None else None
+        )
+        history_rows = history_store.load_all()
+        warm_start_vectors = history_store.top_k(config.warm_start_top_k)
+        if warm_start_vectors:
+            case_logger.log_stage(
+                stage="night_optimization_warm_start",
+                status="loaded",
+                extra={"history_size": len(history_rows), "warm_start": len(warm_start_vectors)},
+            )
 
         base_mid_evaluator = _mid_gate_evaluator(repaired_mesh, region, deformer)
+
+        # L1: wrap the mid-gate with a GP prediction once the history
+        # crosses the threshold; otherwise keep the analytic proxy.
+        if len(history_rows) >= config.gp_surrogate_min_history:
+            surrogate = GPSurrogate()
+            surrogate.fit(
+                [vec for vec, _cd in history_rows],
+                [cd for _vec, cd in history_rows],
+            )
+            mid_evaluator = _wrap_mid_gate_with_gp(base_mid_evaluator, surrogate)
+            case_logger.log_stage(
+                stage="night_optimization_surrogate",
+                status="trained",
+                extra={"training_points": len(history_rows)},
+            )
+        else:
+            mid_evaluator = base_mid_evaluator
+
+        # L4: validity prefilter wraps whichever evaluator we ended up with.
         if config.enable_validity_prefilter:
-            base_mid_evaluator = _with_validity_prefilter(
-                base_mid_evaluator,
+            mid_evaluator = _with_validity_prefilter(
+                mid_evaluator,
                 classifier=validity_classifier,
                 reject_threshold=config.validity_reject_threshold,
-                history_path=history_path,
+                history_path=validity_history_path,
                 baseline_mesh=repaired_mesh,
                 region=region,
                 deformer=deformer,
@@ -153,7 +208,7 @@ def run_night_optimization(
 
         mid_gate = Gate(
             name="mid",
-            evaluate=base_mid_evaluator,
+            evaluate=mid_evaluator,
             estimated_seconds_per_eval=config.mid_gate_estimated_seconds_per_eval,
         )
         if high_fidelity_evaluator is not None:
@@ -200,8 +255,16 @@ def run_night_optimization(
             mid_gate=mid_gate,
             high_gate=high_gate,
             seed=config.seed,
+            warm_start_vectors=warm_start_vectors,
+            n_objectives=3,
         )
         result: CascadeResult = cascade.run()
+
+        # L1: append every high-fidelity (vector, cd) pair to the history
+        # JSONL so the next night-run can warm-start from it.
+        for hf in result.high_fidelity_results:
+            if hf.objectives:
+                history_store.record(hf.vector, cd=float(hf.objectives[0]))
         case_logger.log_stage(
             stage="night_optimization",
             status="completed",
@@ -256,7 +319,7 @@ def run_night_optimization(
         )
 
         # Stage 4: write STL per top candidate + pick winner.
-        winner_id = _persist_top_candidate_meshes(
+        winner_id, stl_invalid_candidates = _persist_top_candidate_meshes(
             case_dir=case_dir,
             result=result,
             repaired_mesh=repaired_mesh,
@@ -266,7 +329,10 @@ def run_night_optimization(
         case_logger.log_stage(
             stage="night_optimization_outputs",
             status="completed",
-            extra={"winner": winner_id or "n/a"},
+            extra={
+                "winner": winner_id or "n/a",
+                "stl_invalid_count": len(stl_invalid_candidates),
+            },
         )
 
         # Stage 5: render the HTML night-run report.
@@ -283,6 +349,7 @@ def run_night_optimization(
                     if high_fidelity_evaluator is None and detect_openfoam_available()
                     else ("external" if high_fidelity_evaluator is not None else "surrogate")
                 ),
+                stl_invalid_candidates=stl_invalid_candidates,
             )
             case_logger.log_stage(
                 stage="build_night_report",
@@ -344,7 +411,8 @@ def _mid_gate_evaluator(
     region: dict,
     deformer: BulbFFDDeformer,
 ) -> Callable[[Sequence[KrachtVector]], List[List[float]]]:
-    """Mid-fidelity proxy: deform mesh, read slenderness + volume delta."""
+    """Mid-fidelity proxy: deform mesh, read slenderness + volume delta
+    + mesh quality (L2). All three objectives minimised."""
 
     baseline_volume = _mesh_volume(baseline_mesh)
 
@@ -364,7 +432,11 @@ def _mid_gate_evaluator(
             # Volume delta (preserve displacement). Smaller abs is better.
             deformed_volume = _mesh_volume(deformed)
             volume_delta = abs(deformed_volume - baseline_volume) / max(baseline_volume, 1e-6)
-            objectives.append([float(resistance_proxy), float(volume_delta)])
+            # L2: mesh quality — broken meshes get >= 100 and dominated.
+            mesh_quality = compute_mesh_quality(deformed)
+            objectives.append(
+                [float(resistance_proxy), float(volume_delta), float(mesh_quality)]
+            )
         return objectives
 
     return evaluate
@@ -510,9 +582,10 @@ def _with_validity_prefilter(
     """
     # Spec 2026-04-23 §4 L4 calls out a [1e9, 1e9, 1e9] penalty vector,
     # but the NSGA-II problem is built with the mid-gate's natural
-    # objective count (2 today). We size the penalty row off the first
-    # observed base-evaluator output so this prefilter stays compatible
-    # whenever the mid-gate grows extra objectives.
+    # objective count (3 today with L2 quality objective). We size the
+    # penalty row off the first observed base-evaluator output so this
+    # prefilter stays compatible whenever the mid-gate grows extra
+    # objectives.
     penalty_value: float = 1e9
     observed_n_objectives: list[int] = []
 
@@ -556,7 +629,7 @@ def _with_validity_prefilter(
                 results[target_index] = [float(value) for value in row]
 
         # Now fill in penalty rows with the correct width.
-        n_objectives = observed_n_objectives[0] if observed_n_objectives else 2
+        n_objectives = observed_n_objectives[0] if observed_n_objectives else 3
         penalty_row = [penalty_value] * n_objectives
         filled: List[List[float]] = []
         for row in results:
@@ -579,6 +652,41 @@ def _with_validity_prefilter(
     return evaluate
 
 
+def _wrap_mid_gate_with_gp(
+    base_evaluator: Callable[[Sequence[KrachtVector]], List[List[float]]],
+    surrogate: GPSurrogate,
+) -> Callable[[Sequence[KrachtVector]], List[List[float]]]:
+    """L1 — replace the drag proxy with a GP mean when the surrogate is
+    confident; fall back to the analytic proxy otherwise.
+
+    Strategy:
+    * Compute the proxy once per batch so we keep the second objective
+      (volume delta / etc.) unchanged.
+    * Ask the GP for (mean, std) per vector. If ``predict`` returns
+      ``None`` (too few training points) we return the proxy untouched.
+    * Otherwise replace objective[0] with the GP mean for every vector.
+      We don't yet gate on std because the GP naturally assigns high
+      std to extrapolated points and the GA will penalise them via the
+      proxy's implicit volume term — keeping the code simple.
+    """
+
+    def wrapped(vectors: Sequence[KrachtVector]) -> List[List[float]]:
+        proxy_objectives = base_evaluator(vectors)
+        prediction = surrogate.predict(vectors)
+        if prediction is None:
+            return proxy_objectives
+        means, _stds = prediction
+        merged: List[List[float]] = []
+        for row, mean in zip(proxy_objectives, means):
+            new_row = list(row)
+            if new_row:
+                new_row[0] = float(mean)
+            merged.append(new_row)
+        return merged
+
+    return wrapped
+
+
 # --- persistence helpers ------------------------------------------------
 
 
@@ -589,7 +697,12 @@ def _persist_top_candidate_meshes(
     repaired_mesh: trimesh.Trimesh,
     region: dict,
     deformer: BulbFFDDeformer,
-) -> str | None:
+) -> tuple[str | None, List[dict]]:
+    """Write deformed STL and companion ``stl_valid.json`` for each top
+    candidate. Returns ``(winner_id, invalid_candidates)`` where
+    ``invalid_candidates`` is a list of ``{candidate_id, report}`` for
+    any STL that failed sanity checks so the caller can pass them to the
+    HTML template."""
     output_root = case_dir / "outputs" / "top_candidates"
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -602,6 +715,7 @@ def _persist_top_candidate_meshes(
         for candidate in result.pareto_front.candidates
     ]
     winner_id: str | None = None
+    invalid_candidates: List[dict] = []
     for index, candidate in enumerate(ranked[:10], start=1):
         candidate_id = f"candidate-{index:03d}"
         if winner_id is None:
@@ -612,7 +726,20 @@ def _persist_top_candidate_meshes(
         (candidate_dir / "geometry.stl").write_bytes(
             trimesh.exchange.stl.export_stl(deformed)
         )
-    return winner_id
+        # L6: write stl_valid.json next to geometry.stl and remember
+        # any failing candidates so the report can warn the engineer.
+        report = validate_stl(deformed)
+        import json as _json
+
+        (candidate_dir / "stl_valid.json").write_text(
+            _json.dumps(report, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        if not report["checks_passed"]:
+            invalid_candidates.append(
+                {"candidate_id": candidate_id, "report": report}
+            )
+    return winner_id, invalid_candidates
 
 
 def _render_night_report(
@@ -624,6 +751,7 @@ def _render_night_report(
     scheduler,
     winner_id: str | None,
     high_gate_backend: str,
+    stl_invalid_candidates: List[dict] | None = None,
 ) -> Path:
     template_root = Path(__file__).resolve().parents[2] / "reporting" / "templates"
     report = HtmlReportAdapter(template_root=template_root)
@@ -671,6 +799,7 @@ def _render_night_report(
         "budget_trace": scheduler.trace(),
         "high_gate_backend": high_gate_backend,
         "parameter_names": list(KRACHT_PARAMETER_NAMES),
+        "stl_invalid_candidates": list(stl_invalid_candidates or []),
     }
 
     # The HtmlReportAdapter writes report.html via a hard-coded template

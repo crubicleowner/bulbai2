@@ -41,6 +41,39 @@ from bulbopt.optimization.parametric.kracht_space import (
 )
 
 
+def _build_initial_sampling(
+    space: KrachtDesignSpace,
+    warm_start_vectors: Sequence[KrachtVector],
+    population: int,
+):
+    """Build a pymoo sampling array seeded with ``warm_start_vectors``.
+
+    The returned 2-D ``(population, n_var)`` array is passed as the
+    ``sampling`` argument to pymoo's NSGA2 — pymoo accepts a raw ndarray
+    and uses its rows as the initial population.
+
+    Remaining rows (after the warm-start points) are filled with uniform
+    random samples inside the KrachtDesignSpace bounds. If more
+    warm-start vectors are supplied than the population size, the first
+    ``population`` are used and the rest dropped.
+    """
+    rng = np.random.default_rng(0)
+    xl = np.array([space.bounds[name][0] for name in KRACHT_PARAMETER_NAMES])
+    xu = np.array([space.bounds[name][1] for name in KRACHT_PARAMETER_NAMES])
+    rows: list[np.ndarray] = []
+    for vector in warm_start_vectors[:population]:
+        row = np.array(
+            [float(vector.values[name]) for name in KRACHT_PARAMETER_NAMES],
+            dtype=float,
+        )
+        # Clamp to bounds so pymoo doesn't reject the sample.
+        row = np.minimum(np.maximum(row, xl), xu)
+        rows.append(row)
+    while len(rows) < population:
+        rows.append(xl + rng.random(len(xl)) * (xu - xl))
+    return np.asarray(rows, dtype=float)
+
+
 EvaluateFn = Callable[[List[KrachtVector]], List[List[float]]]
 
 
@@ -83,6 +116,7 @@ class NSGA2Strategy:
         seed: int | None = None,
         on_generation: Callable[[Mapping[str, int]], None] | None = None,
         n_objectives: int = 2,
+        warm_start_vectors: Sequence[KrachtVector] | None = None,
     ) -> None:
         if population < 2:
             raise ValueError("population must be >= 2")
@@ -95,6 +129,9 @@ class NSGA2Strategy:
         self.seed = seed
         self.on_generation = on_generation
         self.n_objectives = int(n_objectives)
+        self.warm_start_vectors: List[KrachtVector] = (
+            list(warm_start_vectors) if warm_start_vectors else []
+        )
 
     def optimize(
         self,
@@ -107,9 +144,17 @@ class NSGA2Strategy:
             evaluate=evaluate,
             n_objectives=self.n_objectives,
         )
+        if self.warm_start_vectors:
+            sampling = _build_initial_sampling(
+                space=space,
+                warm_start_vectors=self.warm_start_vectors,
+                population=self.population,
+            )
+        else:
+            sampling = FloatRandomSampling()
         algo = NSGA2(
             pop_size=self.population,
-            sampling=FloatRandomSampling(),
+            sampling=sampling,
         )
         callback = _GenerationCallback(
             strategy=self,

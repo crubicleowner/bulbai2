@@ -79,10 +79,11 @@ def test_prefilter_skips_deformer_and_returns_penalty(tmp_path: Path):
 
     deformer_calls: List[KrachtVector] = []
 
+    # 3 objectives: resistance_proxy, volume_delta, mesh_quality (L2).
     def _base_evaluator(vectors):
         for v in vectors:
             deformer_calls.append(v)
-        return [[1.0, 0.1] for _ in vectors]
+        return [[1.0, 0.1, 2.0] for _ in vectors]
 
     classifier = _StubClassifier(probability=0.95, training_samples=50)
     wrapped = _with_validity_prefilter(
@@ -100,9 +101,11 @@ def test_prefilter_skips_deformer_and_returns_penalty(tmp_path: Path):
     rows = wrapped(samples)
 
     # Every row is the penalty because the stub classifier votes reject.
+    # Penalty width defaults to 3 (the real mid-gate's objective count
+    # after L2 added mesh_quality). Spec 2026-04-23 §4 L4.
     assert len(rows) == 5
     for row in rows:
-        assert row == pytest.approx([1e9, 1e9])
+        assert row == pytest.approx([1e9, 1e9, 1e9])
     # Base evaluator was never called → deformer never ran on the mid gate.
     assert deformer_calls == []
 
@@ -125,9 +128,10 @@ def test_prefilter_falls_back_to_base_when_classifier_cold(tmp_path: Path):
 
     invocations = {"count": 0}
 
+    # 3 objectives: resistance, volume, mesh_quality (L2).
     def _base_evaluator(vectors):
         invocations["count"] += 1
-        return [[1.23, 0.05] for _ in vectors]
+        return [[1.23, 0.05, 0.8] for _ in vectors]
 
     # No fit() → classifier stays cold; predict_invalid_probability returns None.
     classifier = ValidityClassifier()
@@ -145,7 +149,7 @@ def test_prefilter_falls_back_to_base_when_classifier_cold(tmp_path: Path):
     samples = space.sample(3, seed=0)
     rows = wrapped(samples)
 
-    assert rows == [[1.23, 0.05]] * 3
+    assert rows == [[1.23, 0.05, 0.8]] * 3
     assert invocations["count"] == 1
     # History records actual sanity-check labels for each sample.
     entries = [

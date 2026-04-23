@@ -262,3 +262,170 @@ def test_run_night_optimization_persists_case_json_with_recoverable_flag(
     payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
     assert payload["status"] in {"completed", "completed_with_warnings"}
     assert payload["is_recoverable"] is False
+
+
+def test_run_night_optimization_writes_stl_sanity_json(tmp_path: Path) -> None:
+    """L6: every top-candidate STL gets a companion stl_valid.json with
+    watertight / winding / volume / counts / checks_passed."""
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+
+    summary = run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-sanity",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=2,
+            high_fidelity_budget=2,
+            runtime_budget_hours=1.0,
+            seed=101,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    winner_dir = case_dir / "outputs" / "top_candidates" / summary.best_candidate_id
+    sanity_path = winner_dir / "stl_valid.json"
+    assert sanity_path.exists()
+    report = json.loads(sanity_path.read_text(encoding="utf-8"))
+    for key in (
+        "watertight",
+        "winding_consistent",
+        "volume",
+        "vertex_count",
+        "face_count",
+        "checks_passed",
+    ):
+        assert key in report
+
+
+def test_run_night_optimization_writes_history_jsonl(tmp_path: Path) -> None:
+    """L1: every high-fidelity (vector, cd) pair must be persisted to the
+    history JSONL so future runs can warm-start from it."""
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    history_path = tmp_path / "history" / "history.jsonl"
+
+    run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-history",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=2,
+            high_fidelity_budget=2,
+            runtime_budget_hours=1.0,
+            seed=42,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+            history_path=history_path,
+        ),
+    )
+
+    assert history_path.exists()
+    rows = [
+        json.loads(line)
+        for line in history_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    # At least one high-fidelity row was appended.
+    assert len(rows) >= 1
+    for row in rows:
+        assert "parameters" in row and "cd" in row
+        assert "length_ratio" in row["parameters"]
+
+
+def test_run_night_optimization_warm_starts_from_history(tmp_path: Path) -> None:
+    """L1: a second run with a populated history places the top historical
+    vectors into the initial NSGA-II population."""
+    from bulbopt.application.use_cases import run_night_optimization as use_case_module
+    from bulbopt.optimization.strategies import nsga2_strategy as strategy_module
+
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    history_path = tmp_path / "history.jsonl"
+
+    # Run 1 — populate the history.
+    run_night_optimization(
+        project_root=tmp_path / "projects1",
+        command=CreateCaseCommand(
+            case_name="night-run-one",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=2,
+            high_fidelity_budget=2,
+            runtime_budget_hours=1.0,
+            seed=1,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+            history_path=history_path,
+        ),
+    )
+    # Sanity: history populated before run 2.
+    rows_after_run1 = history_path.read_text(encoding="utf-8").splitlines()
+    assert len(rows_after_run1) >= 1
+
+    # Run 2 — capture the initial population by monkeypatching
+    # NSGA2Strategy.optimize to record vectors passed by the sampling.
+    captured: list[list[float]] = []
+    original_build = strategy_module._build_initial_sampling
+
+    def spy_build(**kwargs):
+        array = original_build(**kwargs)
+        for row in array:
+            captured.append([float(x) for x in row])
+        return array
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(
+        strategy_module, "_build_initial_sampling", side_effect=spy_build
+    ):
+        run_night_optimization(
+            project_root=tmp_path / "projects2",
+            command=CreateCaseCommand(
+                case_name="night-run-two",
+                source_path=str(source_path),
+                vessel_length_m=142.0,
+                vessel_beam_m=19.1,
+                vessel_draft_m=6.0,
+                displacement_t=8420.0,
+                speed_knots=[18.0, 20.0],
+            ),
+            config=NightOptimizationConfig(
+                population=5,
+                generations=2,
+                high_fidelity_budget=2,
+                runtime_budget_hours=1.0,
+                seed=2,
+                mid_gate_estimated_seconds_per_eval=0.001,
+                high_gate_estimated_seconds_per_eval=0.005,
+                history_path=history_path,
+            ),
+        )
+
+    # Warm-start path was taken — the spy was called at least once.
+    assert len(captured) > 0

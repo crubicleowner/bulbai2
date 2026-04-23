@@ -21,7 +21,7 @@ wire mid=potentialFoam / high=simpleFoam without touching this module.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, List
+from typing import Callable, List, Sequence
 
 from bulbopt.optimization.parametric.kracht_space import (
     KrachtDesignSpace,
@@ -77,6 +77,8 @@ class CascadeStrategy:
         mid_gate: Gate,
         high_gate: Gate,
         seed: int | None = None,
+        n_objectives: int = 2,
+        warm_start_vectors: Sequence[KrachtVector] | None = None,
     ) -> None:
         if high_fidelity_budget < 0:
             raise ValueError("high_fidelity_budget must be >= 0")
@@ -88,6 +90,10 @@ class CascadeStrategy:
         self._mid_gate = mid_gate
         self._high_gate = high_gate
         self._seed = seed
+        self._n_objectives = int(n_objectives)
+        self._warm_start_vectors: List[KrachtVector] = (
+            list(warm_start_vectors) if warm_start_vectors else []
+        )
 
     # ---- main entry ------------------------------------------------------
 
@@ -120,13 +126,15 @@ class CascadeStrategy:
             except BudgetExhausted:
                 # Return penalty fitness so NSGA-II can still converge
                 # (large finite values, never NaN, so sort still works).
-                return [[1e9] * 2 for _ in vectors]
+                return [[1e9] * self._n_objectives for _ in vectors]
             return self._mid_gate.evaluate(vectors)
 
         strategy = NSGA2Strategy(
             population=self._population,
             generations=self._generations,
             seed=self._seed,
+            n_objectives=self._n_objectives,
+            warm_start_vectors=self._warm_start_vectors,
         )
         return strategy.optimize(space=self._space, evaluate=accounted_evaluate)
 
