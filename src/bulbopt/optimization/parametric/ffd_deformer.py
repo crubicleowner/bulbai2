@@ -140,9 +140,15 @@ class BulbFFDDeformer:
         if self.force_port_starboard_symmetry:
             other_axes = [a for a in range(3) if a != primary_axis]
             beam_axis = other_axes[0]
-            deformed_vertices = _enforce_mirror_symmetry(
+            # Only symmetrize vertices that actually participate in the
+            # deformation — leave the rest of the hull alone so legacy
+            # topology is preserved bit-identical.
+            participating_indices = np.nonzero(participating)[0]
+            deformed_vertices = _enforce_mirror_symmetry_subset(
                 vertices=deformed_vertices,
                 beam_axis=beam_axis,
+                subset_indices=participating_indices,
+                primary_axis=primary_axis,
             )
 
         out = trimesh.Trimesh(
@@ -164,12 +170,14 @@ class BulbFFDDeformer:
                 iterations=self.post_smoothing_iterations,
             )
             # Re-assert symmetry after smoothing (Laplacian can drift
-            # micro-asymmetries back in).
+            # micro-asymmetries back in). Keep the same subset scope.
             if self.force_port_starboard_symmetry:
                 beam_axis = [a for a in range(3) if a != primary_axis][0]
-                out.vertices = _enforce_mirror_symmetry(
+                out.vertices = _enforce_mirror_symmetry_subset(
                     vertices=np.asarray(out.vertices),
                     beam_axis=beam_axis,
+                    subset_indices=np.nonzero(participating)[0],
+                    primary_axis=primary_axis,
                 )
 
         return out
@@ -406,58 +414,77 @@ def _apply_taubin_to_region(
     mesh.vertices = vertices
 
 
-def _enforce_mirror_symmetry(
+def _enforce_mirror_symmetry_subset(
     vertices: np.ndarray,
     beam_axis: int,
+    subset_indices: np.ndarray,
+    primary_axis: int,
 ) -> np.ndarray:
-    """Make the vertex cloud mirror-symmetric around the beam midplane.
+    """Symmetrise only the vertices in ``subset_indices`` around the beam
+    midplane; leave the rest bit-identical.
 
-    Algorithm (scales linearly in vertex count via KD-tree):
+    Safety guards added after the first naive implementation badly
+    collapsed the mesh (volume -29%, surface +199%):
 
-    1. For every vertex v compute its mirror image v' (flip beam).
-    2. Find the vertex w closest to v' using a KD-tree over the mesh.
-    3. Assign v = (v + mirror(w)) / 2 and mirror-set w accordingly.
+    1. **Subset scope** — only the participating bulb-region vertices get
+       touched. The aft cylindrical hull stays exactly where it was.
+    2. **Mutual pairing** — a vertex i is only merged with its candidate
+       partner j if j's nearest-mirror is also i. Cross-pairings (i→j
+       but j→k≠i) are skipped.
+    3. **Distance gate** — the mirror distance must be below a local
+       threshold derived from the subset's bounding-box diagonal; far
+       partners are clearly wrong matches and get skipped.
 
-    Vertices that are self-mirror (very close to the midplane) become
-    their own partner and get pinned to the midplane.
-
-    The KD-tree keeps memory linear in N (unlike a full N×N distance
-    matrix) so real hull meshes with tens of thousands of vertices fit
-    in RAM.
+    Vertices failing the guards keep their pre-symmetry coordinates —
+    small residual asymmetry is always preferred over a folded mesh.
     """
     from scipy.spatial import cKDTree
 
     symmetric = vertices.copy()
-    n = len(symmetric)
-    if n == 0:
+    if len(subset_indices) == 0:
         return symmetric
 
-    tree = cKDTree(symmetric)
-    mirrors = symmetric.copy()
+    subset = symmetric[subset_indices]
+    mirrors = subset.copy()
     mirrors[:, beam_axis] *= -1.0
+    tree = cKDTree(subset)
+    # For each subset vertex i, nearest subset vertex to mirror(i).
+    distances, partners = tree.query(mirrors, k=1)
+    partners = np.asarray(partners, dtype=int)
 
-    # For each vertex i, nearest neighbour in the original cloud to its
-    # mirror position.
-    _, partner = tree.query(mirrors, k=1)
-    partner = np.asarray(partner, dtype=int)
+    # Mutual-pairing mask: partner[partner[i]] == i
+    mutual = partners[partners] == np.arange(len(subset))
+
+    # Distance threshold = 2% of subset bounding-box diagonal (small
+    # enough to catch cross-pairings, large enough to tolerate mesh
+    # noise after FFD displacement).
+    bbox_diag = float(np.linalg.norm(subset.max(axis=0) - subset.min(axis=0)))
+    threshold = 0.02 * bbox_diag if bbox_diag > 0 else 1e-6
 
     paired: set[int] = set()
-    for i in range(n):
-        if i in paired:
+    for local_i in range(len(subset)):
+        if local_i in paired:
             continue
-        j = int(partner[i])
-        if i == j:
-            symmetric[i, beam_axis] = 0.0
-            paired.add(i)
+        local_j = int(partners[local_i])
+        if local_i == local_j:
+            global_i = int(subset_indices[local_i])
+            symmetric[global_i, beam_axis] = 0.0
+            paired.add(local_i)
             continue
-        if j in paired:
+        if not mutual[local_i]:
             continue
-        avg = 0.5 * (symmetric[i] + mirrors[j])
-        symmetric[i] = avg
+        if float(distances[local_i]) > threshold:
+            continue
+        if local_j in paired:
+            continue
+        global_i = int(subset_indices[local_i])
+        global_j = int(subset_indices[local_j])
+        avg = 0.5 * (subset[local_i] + mirrors[local_j])
+        symmetric[global_i] = avg
         mirrored_avg = avg.copy()
         mirrored_avg[beam_axis] *= -1.0
-        symmetric[j] = mirrored_avg
-        paired.add(i)
-        paired.add(j)
+        symmetric[global_j] = mirrored_avg
+        paired.add(local_i)
+        paired.add(local_j)
 
     return symmetric
