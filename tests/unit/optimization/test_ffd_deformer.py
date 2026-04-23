@@ -254,6 +254,55 @@ def test_deformer_blends_smoothly_across_bulb_region_boundary() -> None:
         assert disp[in_blend].max() < max_full * 1.01
 
 
+def test_deformer_taubin_smoothing_preserves_volume_within_one_percent() -> None:
+    """Spec 2026-04-23 §3 Fix C: Taubin smoothing rounds the sharp facet
+    edges without shrinking the mesh (unlike plain Laplacian). Volume
+    drift after 3 iterations must stay within ±1% of the un-smoothed
+    FFD output."""
+    mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    mesh.apply_scale([2.0, 0.75, 0.5])
+    region = _bulb_region_from_mesh(mesh)
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.03,
+            "breadth_ratio":    0.12,
+            "height_ratio":     0.4,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.55,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.6,
+            "nose_sharpness":   0.4,
+        }
+    )
+
+    deformer_raw = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=0,
+    )
+    deformer_smoothed = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=3,
+    )
+    raw = deformer_raw.deform(mesh, region, vector)
+    smoothed = deformer_smoothed.deform(mesh, region, vector)
+
+    # Volume drift must be small.
+    raw_volume = abs(raw.volume)
+    smoothed_volume = abs(smoothed.volume)
+    drift = abs(smoothed_volume - raw_volume) / max(raw_volume, 1e-12)
+    assert drift < 0.01, (
+        f"Taubin drift {drift*100:.2f}% exceeds 1% budget "
+        f"(raw_volume={raw_volume:.3f}, smoothed_volume={smoothed_volume:.3f})"
+    )
+
+    # Smoothed vertices must actually be different from raw.
+    diff = np.linalg.norm(smoothed.vertices - raw.vertices, axis=1)
+    assert diff.max() > 1e-6, "Expected Taubin to move at least one vertex"
+
+    # Smoothed mesh stays watertight.
+    assert smoothed.is_watertight
+
+
 def test_deformer_result_remains_watertight() -> None:
     """Invariant: FFD only moves vertex positions, never edits faces or
     topology, so a watertight input yields a watertight output."""

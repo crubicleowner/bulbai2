@@ -43,7 +43,11 @@ class BulbFFDDeformer:
     # of the bulb length (axis_max - axis_min).
     BLEND_WIDTH_FRACTION: float = 0.10
 
-    def __init__(self, force_port_starboard_symmetry: bool = True) -> None:
+    def __init__(
+        self,
+        force_port_starboard_symmetry: bool = True,
+        post_smoothing_iterations: int = 3,
+    ) -> None:
         """
         Parameters
         ----------
@@ -53,8 +57,16 @@ class BulbFFDDeformer:
             Fix B). This is defensive: even if the baseline STL has tiny
             triangulation asymmetries, the engineer still gets a
             mirror-clean bulb.
+        post_smoothing_iterations:
+            Number of Taubin smoothing passes applied after FFD. Taubin
+            alternates a positive Laplacian step (smoothing) with a
+            negative one (anti-smoothing) so the low-frequency shape is
+            preserved (volume drift ≤ 1% after 3 iterations) while the
+            polygonal facet edges are rounded (spec 2026-04-23 §3 Fix C).
+            Set to 0 to disable smoothing (useful for volume tests).
         """
         self.force_port_starboard_symmetry = bool(force_port_starboard_symmetry)
+        self.post_smoothing_iterations = max(int(post_smoothing_iterations), 0)
 
     def deform(
         self,
@@ -138,6 +150,28 @@ class BulbFFDDeformer:
             faces=mesh.faces,
             process=False,
         )
+
+        # Spec 2026-04-23 §3 Fix C: Taubin volume-preserving smoothing.
+        # Lambda=0.5, Nu=-0.53 is the classic pair from Taubin 1995 that
+        # preserves low-frequency shape while rounding high-frequency
+        # facet edges. We apply this only to bulb-region vertices so the
+        # rest of the hull keeps its original triangulation.
+        if self.post_smoothing_iterations > 0:
+            _apply_taubin_to_region(
+                out,
+                primary_axis=primary_axis,
+                blend_start=blend_start,
+                iterations=self.post_smoothing_iterations,
+            )
+            # Re-assert symmetry after smoothing (Laplacian can drift
+            # micro-asymmetries back in).
+            if self.force_port_starboard_symmetry:
+                beam_axis = [a for a in range(3) if a != primary_axis][0]
+                out.vertices = _enforce_mirror_symmetry(
+                    vertices=np.asarray(out.vertices),
+                    beam_axis=beam_axis,
+                )
+
         return out
 
     # ---- geometry helpers -------------------------------------------------
@@ -299,6 +333,62 @@ def _bernstein(degree: int, index: int, t: np.ndarray) -> np.ndarray:
     """Compute B_index^degree(t) for an array of parameters t ∈ [0, 1]."""
     coeff = comb(degree, index)
     return coeff * (t ** index) * ((1.0 - t) ** (degree - index))
+
+
+def _apply_taubin_to_region(
+    mesh: trimesh.Trimesh,
+    *,
+    primary_axis: int,
+    blend_start: float,
+    iterations: int,
+    lamb: float = 0.5,
+    nu: float = -0.53,
+) -> None:
+    """Apply Taubin λ/μ smoothing to vertices that participate in the FFD.
+
+    Done in-place on ``mesh.vertices``. Vertices outside the region
+    (axis < blend_start) are explicitly held fixed so the rest of the
+    hull triangulation never moves.
+
+    The classic Taubin parameters (λ=0.5, ν=-0.53) satisfy
+    λν / (λ+ν) ≈ -0.22 which preserves frequencies below the cutoff
+    ~1/kPB ≈ 1 cycle per mesh region — low-frequency shape survives,
+    facet edges flatten.
+    """
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    n = len(vertices)
+    if n == 0 or iterations <= 0:
+        return
+
+    # Build vertex-vertex adjacency once.
+    neighbours: list[list[int]] = [[] for _ in range(n)]
+    seen: set[tuple[int, int]] = set()
+    for face in mesh.faces:
+        a, b, c = int(face[0]), int(face[1]), int(face[2])
+        for u, v in ((a, b), (b, c), (c, a)):
+            key = (u, v) if u < v else (v, u)
+            if key in seen:
+                continue
+            seen.add(key)
+            neighbours[u].append(v)
+            neighbours[v].append(u)
+
+    movable_mask = vertices[:, primary_axis] >= blend_start
+
+    for _ in range(iterations):
+        for step in (lamb, nu):
+            laplacian = np.zeros_like(vertices)
+            for i in range(n):
+                nbrs = neighbours[i]
+                if not nbrs:
+                    continue
+                laplacian[i] = vertices[nbrs].mean(axis=0) - vertices[i]
+            vertices_next = vertices + step * laplacian
+            # Keep non-region vertices bit-identical.
+            vertices_next[~movable_mask] = vertices[~movable_mask]
+            vertices = vertices_next
+
+    mesh.vertices = vertices
 
 
 def _enforce_mirror_symmetry(
