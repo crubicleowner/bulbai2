@@ -148,8 +148,13 @@ def test_run_cli_night_run_command_writes_pareto_artifacts(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "night-cli" in captured.out or "case_id=" in captured.out
-    # One case in project_root.
-    cases = list(project_root.iterdir())
+    # One case in project_root (ignore the .history validity cache the
+    # night-run accumulates under <project_root>/.history for the L4
+    # classifier across runs).
+    cases = [
+        p for p in project_root.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    ]
     assert len(cases) == 1
     case_dir = cases[0]
     pareto = case_dir / "working" / "night_optimization" / "pareto_front.json"

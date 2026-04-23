@@ -45,6 +45,10 @@ from bulbopt.infrastructure.adapters.openfoam_adapter import (
 from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
 from bulbopt.infrastructure.adapters.simple_foam_gate import SimpleFoamHighFidelityGate
 from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
+from bulbopt.optimization.learning.validity_classifier import (
+    MIN_TRAINING_SAMPLES,
+    ValidityClassifier,
+)
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
 from bulbopt.optimization.parametric.kracht_space import (
     KRACHT_PARAMETER_NAMES,
@@ -66,6 +70,13 @@ from bulbopt.storage.project_repository.filesystem_repository import (
 HighFidelityEvaluator = Callable[[List[KrachtVector]], List[List[float]]]
 
 
+# Validity history filename, kept under ``<project_root>/.history`` so a single
+# history accumulates across every night-run for the same project root (see
+# 2026-04-23 mesh-quality spec §4 L4). One JSON object per line: ``{"vector":
+# [..8 floats..], "invalid": 0 | 1}``.
+VALIDITY_HISTORY_FILENAME: str = "validity_history.jsonl"
+
+
 @dataclass(slots=True)
 class NightOptimizationConfig:
     """All the knobs for a night run that aren't in CreateCaseCommand."""
@@ -76,6 +87,12 @@ class NightOptimizationConfig:
     seed: int | None = None
     mid_gate_estimated_seconds_per_eval: float = 5.0
     high_gate_estimated_seconds_per_eval: float = 300.0
+    # Validity classifier prefilter (spec 2026-04-23 §4 L4). Enabled by
+    # default; reject candidates whose predicted p(invalid) exceeds the
+    # threshold. Set ``enable_validity_prefilter=False`` to disable (e.g.
+    # when sanity-check costs dominate prediction accuracy).
+    enable_validity_prefilter: bool = True
+    validity_reject_threshold: float = 0.7
 
 
 def run_night_optimization(
@@ -114,9 +131,29 @@ def run_night_optimization(
         )
         region = geometry_analysis["bulb_region"]
 
+        # Load / train validity classifier from prior HF history (spec
+        # 2026-04-23 §4 L4). When the project has fewer than
+        # MIN_TRAINING_SAMPLES examples this becomes a no-op; the wrapper
+        # still records new labels so the next run benefits.
+        history_path = _validity_history_path(project_root)
+        validity_classifier = _load_and_train_validity_classifier(history_path)
+
+        base_mid_evaluator = _mid_gate_evaluator(repaired_mesh, region, deformer)
+        if config.enable_validity_prefilter:
+            base_mid_evaluator = _with_validity_prefilter(
+                base_mid_evaluator,
+                classifier=validity_classifier,
+                reject_threshold=config.validity_reject_threshold,
+                history_path=history_path,
+                baseline_mesh=repaired_mesh,
+                region=region,
+                deformer=deformer,
+                case_logger=case_logger,
+            )
+
         mid_gate = Gate(
             name="mid",
-            evaluate=_mid_gate_evaluator(repaired_mesh, region, deformer),
+            evaluate=base_mid_evaluator,
             estimated_seconds_per_eval=config.mid_gate_estimated_seconds_per_eval,
         )
         if high_fidelity_evaluator is not None:
@@ -341,6 +378,205 @@ def _default_high_evaluator(
     """Placeholder high-fidelity gate: same proxy as mid for fast tests.
     Task 6 replaces this with a simpleFoam runner."""
     return _mid_gate_evaluator(baseline_mesh, region, deformer)
+
+
+# --- validity classifier glue (spec 2026-04-23 §4 L4) -------------------
+
+
+def _validity_history_path(project_root: Path) -> Path:
+    """Return the JSONL file accumulating ``(vector, invalid)`` labels.
+
+    One file per project root so runs share a common training history.
+    The directory is created lazily by :func:`_append_validity_record`
+    to avoid polluting an empty ``project_root`` with a ``.history`` dir
+    on dry-run flows.
+    """
+    return Path(project_root) / ".history" / VALIDITY_HISTORY_FILENAME
+
+
+def _load_and_train_validity_classifier(history_path: Path) -> ValidityClassifier:
+    """Train a classifier on every row of the JSONL history.
+
+    Missing or empty history → returns a cold classifier whose
+    ``predict_invalid_probability`` returns ``None`` (prefilter becomes a
+    no-op).
+    """
+    import json as _json
+
+    classifier = ValidityClassifier()
+    if not history_path.exists():
+        return classifier
+
+    vectors: List[List[float]] = []
+    labels: List[int] = []
+    try:
+        with history_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = _json.loads(line)
+                vector = entry.get("vector")
+                invalid = entry.get("invalid")
+                if vector is None or invalid is None:
+                    continue
+                if len(vector) != len(KRACHT_PARAMETER_NAMES):
+                    continue
+                vectors.append([float(v) for v in vector])
+                labels.append(int(invalid))
+    except (OSError, ValueError):
+        # Corrupt history is not fatal — degrade to cold classifier.
+        return classifier
+
+    if len(vectors) < MIN_TRAINING_SAMPLES:
+        # Fit anyway so ``n_training_samples`` reflects reality, but the
+        # predictor will return None until the threshold is reached.
+        classifier.fit(vectors, labels)
+        return classifier
+
+    classifier.fit(vectors, labels)
+    return classifier
+
+
+def _append_validity_record(
+    history_path: Path,
+    vector: KrachtVector,
+    invalid: bool,
+) -> None:
+    import json as _json
+
+    row = {
+        "vector": [float(vector.values[name]) for name in KRACHT_PARAMETER_NAMES],
+        "invalid": int(bool(invalid)),
+    }
+    try:
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        with history_path.open("a", encoding="utf-8") as handle:
+            handle.write(_json.dumps(row) + "\n")
+    except OSError:
+        # Do not let persistence errors derail the optimisation run.
+        pass
+
+
+def _is_mesh_invalid(mesh: trimesh.Trimesh) -> bool:
+    """Sanity check for a deformed mesh.
+
+    A mesh is "invalid" if it fails any of:
+    * not watertight (topology broken),
+    * winding not consistent (normals inverted somewhere),
+    * volume is not strictly positive (folded / self-intersected).
+
+    Trimesh's winding check doesn't assert there are zero self-
+    intersections, but together the three signals are a reasonable proxy.
+    """
+    try:
+        if not bool(mesh.is_watertight):
+            return True
+        if not bool(mesh.is_winding_consistent):
+            return True
+    except Exception:
+        return True
+    try:
+        if mesh.is_volume:
+            volume = float(mesh.volume)
+        else:
+            extents = mesh.extents.astype(float)
+            volume = float(extents[0] * extents[1] * extents[2])
+    except Exception:
+        return True
+    return volume <= 0.0
+
+
+def _with_validity_prefilter(
+    base_evaluator: Callable[[Sequence[KrachtVector]], List[List[float]]],
+    *,
+    classifier: ValidityClassifier,
+    reject_threshold: float,
+    history_path: Path,
+    baseline_mesh: trimesh.Trimesh,
+    region: dict,
+    deformer: BulbFFDDeformer,
+    case_logger: CaseLogger,
+) -> Callable[[Sequence[KrachtVector]], List[List[float]]]:
+    """Wrap the mid-gate with a validity prefilter + label recorder.
+
+    Behaviour per vector:
+
+    * If the classifier predicts ``p(invalid) > reject_threshold``, skip
+      the deformer entirely and assign a hard penalty objective vector.
+    * Otherwise run the base evaluator and, after deforming for the
+      sanity check, append a label row to ``history_path`` for the next
+      run's training data.
+    """
+    # Spec 2026-04-23 §4 L4 calls out a [1e9, 1e9, 1e9] penalty vector,
+    # but the NSGA-II problem is built with the mid-gate's natural
+    # objective count (2 today). We size the penalty row off the first
+    # observed base-evaluator output so this prefilter stays compatible
+    # whenever the mid-gate grows extra objectives.
+    penalty_value: float = 1e9
+    observed_n_objectives: list[int] = []
+
+    def evaluate(vectors: Sequence[KrachtVector]) -> List[List[float]]:
+        vectors = list(vectors)
+        results: List[List[float] | None] = [None] * len(vectors)
+        rerun_indices: List[int] = []
+        rerun_vectors: List[KrachtVector] = []
+        reject_count = 0
+
+        for index, vector in enumerate(vectors):
+            prob = classifier.predict_invalid_probability(vector)
+            if prob is not None and prob > reject_threshold:
+                # Predicted invalid → skip deformer, write label, penalty.
+                results[index] = None  # fill below when we know the width
+                rerun_indices.append(-1)  # placeholder; not re-run
+                _append_validity_record(history_path, vector, invalid=True)
+                reject_count += 1
+                continue
+            rerun_indices.append(index)
+            rerun_vectors.append(vector)
+
+        if rerun_vectors:
+            rerun_rows = base_evaluator(rerun_vectors)
+            if rerun_rows:
+                observed_n_objectives.append(len(rerun_rows[0]))
+            j = 0
+            for target_index in rerun_indices:
+                if target_index == -1:
+                    continue
+                vector = vectors[target_index]
+                row = rerun_rows[j]
+                j += 1
+                # Sanity check via a fresh deform so we record the real label.
+                try:
+                    deformed = deformer.deform(baseline_mesh, region, vector)
+                    invalid_label = _is_mesh_invalid(deformed)
+                except Exception:
+                    invalid_label = True
+                _append_validity_record(history_path, vector, invalid=invalid_label)
+                results[target_index] = [float(value) for value in row]
+
+        # Now fill in penalty rows with the correct width.
+        n_objectives = observed_n_objectives[0] if observed_n_objectives else 2
+        penalty_row = [penalty_value] * n_objectives
+        filled: List[List[float]] = []
+        for row in results:
+            filled.append(row if row is not None else list(penalty_row))
+
+        if reject_count > 0:
+            case_logger.log_stage(
+                stage="validity_prefilter",
+                status="applied",
+                extra={
+                    "rejected": reject_count,
+                    "total": len(vectors),
+                    "training_samples": classifier.n_training_samples,
+                    "reject_threshold": float(reject_threshold),
+                },
+            )
+
+        return filled
+
+    return evaluate
 
 
 # --- persistence helpers ------------------------------------------------
