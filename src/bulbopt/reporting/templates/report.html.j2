@@ -12,6 +12,93 @@
     <p>Runtime budget: {{ runtime_budget_hours }} h</p>
     <p>Candidate count: {{ candidate_count }}</p>
     <p>Processed candidates: {{ processed_candidates }}</p>
+    {% if repair_summary %}
+    <h2>Geometry repair</h2>
+    <p>Repair status: {{ repair_summary.repair_status }}</p>
+    <p>Watertight before: {{ repair_summary.watertight_before }}</p>
+    <p>Watertight after: {{ repair_summary.watertight }}</p>
+    <p>Vertices (before → after): {{ repair_summary.vertices_count_before }} → {{ repair_summary.vertices_count }}</p>
+    <p>Faces (before → after): {{ repair_summary.faces_count_before }} → {{ repair_summary.faces_count }}</p>
+    {% endif %}
+    {% if bulb_region_summary %}
+    <h2>Bulb region</h2>
+    <p>Confirmation source: {{ bulb_region_summary.confirmation_source }}</p>
+    <p>Primary axis: {{ bulb_region_summary.axis_index }}</p>
+    <p>Auto-detected axis_min: {{ bulb_region_summary.auto_axis_min }}</p>
+    <p>Confirmed axis_min: {{ bulb_region_summary.axis_min }}</p>
+    <p>Confirmed axis_max: {{ bulb_region_summary.axis_max }}</p>
+    <p>Mask ratio: {{ bulb_region_summary.mask_ratio }}</p>
+    {% endif %}
+    {% if timing_summary and timing_summary.stages %}
+    <h2>Stage timing</h2>
+    <p>Total elapsed: {{ timing_summary.total_seconds }} s across {{ timing_summary.stage_count }} stages</p>
+    {% if timing_summary.slowest_stage %}
+    <p>Slowest stage: {{ timing_summary.slowest_stage }} ({{ timing_summary.slowest_stage_seconds }} s)</p>
+    {% endif %}
+    <table border="1" cellpadding="4" cellspacing="0">
+      <thead><tr><th>Stage</th><th>Status</th><th>Elapsed (s)</th></tr></thead>
+      <tbody>
+        {% for stage in timing_summary.stages %}
+        <tr>
+          <td>{{ stage.stage }}</td>
+          <td>{{ stage.status }}</td>
+          <td>{{ stage.elapsed_seconds }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if before_after_summary %}
+    <h2>Before/After comparison</h2>
+    <table border="1" cellpadding="4" cellspacing="0">
+      <thead>
+        <tr><th>Metric</th><th>Baseline (repaired)</th><th>Best candidate</th><th>Delta</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Vertices</td>
+          <td>{{ before_after_summary.baseline.vertices_count }}</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>Faces</td>
+          <td>{{ before_after_summary.baseline.faces_count }}</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>Baseline axial extent (m)</td>
+          <td>{{ before_after_summary.baseline.axial_extent_m }}</td>
+          <td>Best candidate axial extent: {{ before_after_summary.best_candidate.axial_extent_m }}</td>
+          <td>{{ before_after_summary.delta.axial_extent_pct }}%</td>
+        </tr>
+        <tr>
+          <td>Beam extent (m)</td>
+          <td>{{ before_after_summary.baseline.beam_extent_m }}</td>
+          <td>{{ before_after_summary.best_candidate.beam_extent_m }}</td>
+          <td>{{ before_after_summary.delta.beam_extent_pct }}%</td>
+        </tr>
+        <tr>
+          <td>Draft extent (m)</td>
+          <td>{{ before_after_summary.baseline.draft_extent_m }}</td>
+          <td>{{ before_after_summary.best_candidate.draft_extent_m }}</td>
+          <td>{{ before_after_summary.delta.draft_extent_pct }}%</td>
+        </tr>
+        <tr>
+          <td>Surface area (m²)</td>
+          <td>{{ before_after_summary.baseline.surface_area_m2 }}</td>
+          <td>{{ before_after_summary.best_candidate.surface_area_m2 }}</td>
+          <td>{{ before_after_summary.delta.surface_area_pct }}%</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Best candidate id: {{ before_after_summary.best_candidate.candidate_id }}</p>
+    <p>Slenderness ratio: {{ before_after_summary.best_candidate.slenderness_ratio }}</p>
+    <p>Axial gain (m): {{ before_after_summary.delta.axial_gain_m }}</p>
+    <p>Beam growth (m): {{ before_after_summary.delta.beam_growth_m }}</p>
+    <p>Draft reduction (m): {{ before_after_summary.delta.draft_reduction_m }}</p>
+    {% endif %}
     {% if objective_weights %}
     <h2>Objective weights</h2>
     <p>Resistance weight: {{ objective_weights.resistance_weight }}</p>

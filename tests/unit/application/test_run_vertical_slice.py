@@ -1096,3 +1096,383 @@ def test_run_vertical_slice_marks_case_completed_with_warnings_when_best_candida
     assert case_payload["summary_metrics"]["hydrostatics"]["constraint_status"] == "warn"
     assert "volume_delta_exceeds_limit" in case_payload["summary_metrics"]["hydrostatics"]["warnings"]
     assert "completed_with_warnings" in report_html
+
+
+def test_run_vertical_slice_surfaces_repair_summary_in_html_report(tmp_path: Path) -> None:
+    """Spec §14 demands engineering-honest reporting of repair activity so
+    the HTML report always includes the geometry repair summary block.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="repair-report-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    report_html = (case_dir / "outputs" / "reports" / "report.html").read_text(encoding="utf-8")
+    assert "Geometry repair" in report_html
+    assert "Repair status: not_needed" in report_html
+    assert "Watertight before: True" in report_html
+    assert "Watertight after: True" in report_html
+    # Spec §11.2 + §14: bulb region confirmation is always surfaced so
+    # engineers can see whether they reviewed the auto-detected area.
+    assert "Bulb region" in report_html
+    assert "Confirmation source: auto_detected" in report_html
+    # Spec §14: explicit Before/After comparison.
+    assert "Before/After comparison" in report_html
+    assert "Baseline axial extent" in report_html
+    assert "Best candidate axial extent" in report_html
+
+
+def test_run_vertical_slice_writes_jsonl_case_log(tmp_path: Path) -> None:
+    """Spec §9: every case folder must contain logs/case.log. The pipeline
+    writes one JSONL entry per stage transition (started / completed) plus
+    pipeline started + pipeline completed markers.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="logs-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    log_path = case_dir / "logs" / "case.log"
+    assert log_path.exists()
+    lines = [line for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    entries = [json.loads(line) for line in lines]
+    assert entries, "Expected at least one log entry"
+    # Pipeline brackets:
+    assert entries[0]["stage"] == "pipeline"
+    assert entries[0]["status"] == "started"
+    assert entries[-1]["stage"] == "pipeline"
+    assert entries[-1]["status"] in {"completed", "completed_with_warnings"}
+    stages_logged = {entry["stage"] for entry in entries}
+    assert {"prepare_geometry", "generate_candidates", "evaluate_candidates"}.issubset(
+        stages_logged
+    )
+
+
+def test_run_vertical_slice_records_per_stage_timing_in_summary_metrics(tmp_path: Path) -> None:
+    """Observability: after a successful run, case.summary_metrics.timing
+    contains per-stage elapsed_seconds aggregated from working/checkpoints,
+    plus the slowest stage so the engineer can spot the bottleneck.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="timing-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    timing = case_payload["summary_metrics"]["timing"]
+    assert timing["stage_count"] >= 7  # at least 7 pipeline stages including export
+    assert timing["total_seconds"] >= 0.0
+    stage_names = {stage["stage"] for stage in timing["stages"]}
+    assert {
+        "prepare_geometry",
+        "generate_candidates",
+        "evaluate_candidates",
+        "rank_candidates",
+        "openfoam_build_case",
+        "openfoam_run_case",
+        "build_html_report",
+        "export_case_package",
+    }.issubset(stage_names)
+    assert timing["slowest_stage"] in stage_names
+    assert timing["slowest_stage_seconds"] >= 0.0
+
+    report_html = (case_dir / "outputs" / "reports" / "report.html").read_text(encoding="utf-8")
+    assert "Stage timing" in report_html
+    assert "prepare_geometry" in report_html
+
+
+def test_run_vertical_slice_writes_case_package_archive(tmp_path: Path) -> None:
+    """Spec §6.5: each completed case must yield an archived case package so
+    engineers can share or store the full run in one file. The pipeline writes
+    the zip into outputs/packages/ and records the path in artifacts_index.
+    """
+    import zipfile
+
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="package-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    package_path = case_dir / "outputs" / "packages" / f"{summary.case_id}.zip"
+    assert package_path.exists(), "Expected the case package archive to be written"
+    with zipfile.ZipFile(package_path) as archive:
+        names = set(archive.namelist())
+    assert f"{summary.case_id}/case.json" in names
+    assert f"{summary.case_id}/outputs/reports/report.html" in names
+
+    artifacts_index = json.loads((case_dir / "artifacts_index.json").read_text(encoding="utf-8"))
+    assert artifacts_index.get("case_package") == str(package_path)
+
+
+def test_run_vertical_slice_applies_bulb_region_override_from_command(tmp_path: Path) -> None:
+    """Spec §11.2: the user confirms or adjusts the auto-detected bulb area.
+    When ``bulb_region_axis_min_override`` is set, the pipeline stores the
+    confirmed value while preserving ``auto_axis_min`` for the report.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="confirm-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+            bulb_region_axis_min_override=1.5,
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    analysis = json.loads(
+        (case_dir / "working" / "repaired" / "geometry_analysis.json").read_text(encoding="utf-8")
+    )
+    assert analysis["bulb_region"]["axis_min"] == pytest.approx(1.5)
+    assert analysis["bulb_region"]["confirmation_source"] == "user_override"
+    assert "auto_axis_min" in analysis["bulb_region"]
+
+
+def test_run_vertical_slice_local_optimize_mode_completes_and_marks_candidates(
+    tmp_path: Path,
+) -> None:
+    """Spec §11.4: launching with ``local_optimize`` must complete end-to-end
+    and the persisted candidate_index must reflect the mode so the report and
+    UI can distinguish local refinement runs from full regeneration.
+    """
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="local-opt-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+            optimization_mode="local_optimize",
+        ),
+    )
+
+    assert summary.status in {"completed", "completed_with_warnings"}
+    case_dir = tmp_path / "projects" / summary.case_id
+    candidate_index = json.loads((case_dir / "candidate_index.json").read_text(encoding="utf-8"))
+    assert candidate_index, "Expected at least one candidate in local_optimize mode"
+    for candidate in candidate_index:
+        assert candidate["generation_profile"]["optimization_mode"] == "local_optimize"
+
+
+def test_resume_vertical_slice_recovers_from_persisted_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec §10 mandates that after a mid-pipeline failure, the application
+    can resume the same case without re-entering metadata and without
+    repeating successful stages.
+    """
+    from bulbopt.application.use_cases.run_vertical_slice import resume_vertical_slice
+    from bulbopt.infrastructure.adapters.stub_evaluation import StubEvaluationAdapter
+
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+    project_root = tmp_path / "projects"
+
+    # First attempt: force an evaluation failure so the case is flagged recoverable.
+    original_evaluate = StubEvaluationAdapter.evaluate_candidates
+
+    def broken_evaluate(self, *args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("evaluation outage")
+
+    monkeypatch.setattr(StubEvaluationAdapter, "evaluate_candidates", broken_evaluate)
+
+    with pytest.raises(RuntimeError, match="evaluation outage"):
+        run_vertical_slice(
+            project_root=project_root,
+            command=CreateCaseCommand(
+                case_name="resume-demo",
+                source_path=str(source_path),
+                vessel_length_m=142.0,
+                vessel_beam_m=19.1,
+                vessel_draft_m=6.0,
+                displacement_t=8420.0,
+                speed_knots=[18.0, 20.0],
+            ),
+        )
+
+    failed_case_dirs = list(project_root.iterdir())
+    assert len(failed_case_dirs) == 1
+    case_id = failed_case_dirs[0].name
+    case_dir = failed_case_dirs[0]
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    assert case_payload["status"] == "failed"
+    assert case_payload["is_recoverable"] is True
+
+    # Second attempt: restore evaluate_candidates and call resume_vertical_slice.
+    monkeypatch.setattr(StubEvaluationAdapter, "evaluate_candidates", original_evaluate)
+
+    summary = resume_vertical_slice(project_root=project_root, case_id=case_id)
+
+    assert summary.case_id == case_id
+    assert summary.status in {"completed", "completed_with_warnings"}
+
+    case_payload_after = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    assert case_payload_after["status"] in {"completed", "completed_with_warnings"}
+    assert case_payload_after["is_recoverable"] is False
+
+    # prepare_geometry checkpoint from the first attempt should still be there
+    # and the resumed run should NOT have overwritten it with a re-executed one.
+    prepare_cp = case_dir / "working" / "checkpoints" / f"{case_id}-prepare_geometry.json"
+    assert prepare_cp.exists()
+    # The evaluation checkpoint was "failed" after the first attempt; the resume
+    # must overwrite it with a completed payload.
+    eval_cp = case_dir / "working" / "checkpoints" / f"{case_id}-evaluate_candidates.json"
+    eval_payload = json.loads(eval_cp.read_text(encoding="utf-8"))
+    assert eval_payload["status"] == "completed"
+
+
+def test_run_vertical_slice_records_checkpoint_per_stage(tmp_path: Path) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+
+    summary = run_vertical_slice(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="checkpoint-demo",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    checkpoints_dir = case_dir / "working" / "checkpoints"
+
+    assert checkpoints_dir.exists()
+    checkpoint_files = list(checkpoints_dir.glob("*.json"))
+    assert checkpoint_files, "Expected per-stage checkpoint files after a successful run"
+
+    stage_names = {
+        path.stem.split(f"{summary.case_id}-", 1)[1] if path.stem.startswith(f"{summary.case_id}-") else path.stem
+        for path in checkpoint_files
+    }
+    expected_stages = {
+        "prepare_geometry",
+        "generate_candidates",
+        "evaluate_candidates",
+        "rank_candidates",
+        "openfoam_build_case",
+        "openfoam_run_case",
+        "build_html_report",
+    }
+    missing_stages = expected_stages - stage_names
+    assert not missing_stages, f"Missing checkpoint stages: {sorted(missing_stages)}"
+
+    for checkpoint_path in checkpoint_files:
+        payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        assert payload["status"] == "completed", (
+            f"Checkpoint {checkpoint_path.name} should be completed, got {payload['status']}"
+        )
+
+
+def test_run_vertical_slice_records_recoverable_checkpoint_on_stage_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+    project_root = tmp_path / "projects"
+
+    from bulbopt.infrastructure.adapters.stub_evaluation import StubEvaluationAdapter
+
+    def boom(self, *args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("evaluation failure")
+
+    monkeypatch.setattr(StubEvaluationAdapter, "evaluate_candidates", boom)
+
+    with pytest.raises(RuntimeError, match="evaluation failure"):
+        run_vertical_slice(
+            project_root=project_root,
+            command=CreateCaseCommand(
+                case_name="failing-stage-demo",
+                source_path=str(source_path),
+                vessel_length_m=142.0,
+                vessel_beam_m=19.1,
+                vessel_draft_m=6.0,
+                displacement_t=8420.0,
+                speed_knots=[18.0, 20.0],
+            ),
+        )
+
+    case_dirs = list(project_root.iterdir())
+    assert len(case_dirs) == 1
+    case_dir = case_dirs[0]
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    assert case_payload["status"] == "failed"
+    assert case_payload["is_recoverable"] is True
+
+    checkpoints_dir = case_dir / "working" / "checkpoints"
+    failing_checkpoint = next(
+        (path for path in checkpoints_dir.glob("*.json") if "evaluate_candidates" in path.stem),
+        None,
+    )
+    assert failing_checkpoint is not None, "Expected evaluate_candidates checkpoint to be written even on failure"
+    payload = json.loads(failing_checkpoint.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["is_recoverable"] is True
+    assert "evaluation failure" in payload["error"]

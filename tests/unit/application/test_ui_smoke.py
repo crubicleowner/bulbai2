@@ -613,6 +613,442 @@ def test_main_window_surfaces_completed_with_warnings_status(tmp_path: Path, mon
         app.processEvents()
 
 
+def test_night_run_dialog_round_trips_knobs(tmp_path: Path, monkeypatch) -> None:
+    """Dialog inputs must serialise into a dict the bootstrap runner can
+    consume directly (same keys as services['run_night_optimization']
+    expects)."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from bulbopt.ui.desktop.night_run_dialog import NightRunDialog
+
+    app = QApplication.instance() or QApplication([])
+    dialog = NightRunDialog()
+    try:
+        budget = dialog.findChild(QDoubleSpinBox, "night_budget_hours_input")
+        population = dialog.findChild(QSpinBox, "night_population_input")
+        generations = dialog.findChild(QSpinBox, "night_generations_input")
+        hf = dialog.findChild(QSpinBox, "night_high_fidelity_input")
+        seed = dialog.findChild(QLineEdit, "night_seed_input")
+        assert budget is not None
+        assert population is not None
+        assert generations is not None
+        assert hf is not None
+        assert seed is not None
+
+        # Defaults first.
+        defaults = dialog.values()
+        assert defaults["budget_hours"] == 8.0
+        assert defaults["population"] == 50
+        assert defaults["generations"] == 20
+        assert defaults["high_fidelity_budget"] == 10
+        assert defaults["seed"] is None
+
+        # User edits.
+        budget.setValue(6.5)
+        population.setValue(40)
+        generations.setValue(15)
+        hf.setValue(8)
+        seed.setText("777")
+
+        edited = dialog.values()
+        assert edited["budget_hours"] == 6.5
+        assert edited["population"] == 40
+        assert edited["generations"] == 15
+        assert edited["high_fidelity_budget"] == 8
+        assert edited["seed"] == 777
+
+        # Garbage seed stays None rather than raising.
+        seed.setText("not-an-int")
+        assert dialog.values()["seed"] is None
+    finally:
+        dialog.close()
+        app.processEvents()
+
+
+def test_main_window_night_run_button_invokes_service_and_updates_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Spec §11.1: engineer clicks Night Run, NightRunDialog collects the
+    NSGA-II budget, and the desktop hands the merged payload to
+    services['run_night_optimization'], then surfaces the winner in a
+    status label."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    calls: list[dict] = []
+
+    def fake_night_runner(**kwargs):
+        calls.append(kwargs)
+        return CaseSummary(
+            case_id="case-night-42",
+            case_name=str(kwargs["case_name"]),
+            status="completed",
+            best_candidate_id="candidate-001",
+        )
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": lambda **_k: CaseSummary(
+                case_id="vs",
+                case_name="unused",
+                status="completed",
+                best_candidate_id=None,
+            ),
+            "list_cases": lambda: [],
+            "run_night_optimization": fake_night_runner,
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    # Stub the dialog so tests never block on exec().
+    class _FakeDialog:
+        Accepted = 1
+        Rejected = 0
+
+        def __init__(self, parent=None):
+            pass
+
+        def exec(self):
+            return _FakeDialog.Accepted
+
+        def values(self):
+            return {
+                "budget_hours": 4.0,
+                "population": 30,
+                "generations": 10,
+                "high_fidelity_budget": 5,
+                "seed": 123,
+            }
+
+    monkeypatch.setattr(main_window_module, "NightRunDialog", _FakeDialog)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+    try:
+        central_widget = window.centralWidget()
+        night_button = central_widget.findChild(QPushButton, "night_run_button")
+        night_status = central_widget.findChild(QLabel, "night_run_status_label")
+        assert night_button is not None
+        assert night_status is not None
+        assert "idle" in night_status.text().lower()
+
+        night_button.click()
+        app.processEvents()
+
+        assert len(calls) == 1
+        night_kwargs = calls[0]
+        # Dialog values must be threaded through, not the default constants.
+        assert night_kwargs["budget_hours"] == 4.0
+        assert night_kwargs["population"] == 30
+        assert night_kwargs["generations"] == 10
+        assert night_kwargs["seed"] == 123
+        assert "case-night-42" in night_status.text()
+        assert "candidate-001" in night_status.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_detect_bulb_region_button_populates_preview_label(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Spec §11.2: engineer clicks "Detect Bulb Region" and sees the
+    auto-detected axis_min/axis_max without running the full pipeline.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    def fake_detect(source_path: str) -> dict:
+        return {
+            "bulb_region": {
+                "axis_index": 0,
+                "auto_axis_min": 3.4,
+                "auto_axis_max": 4.0,
+                "mask_ratio": 0.12,
+                "confirmation_source": "auto_detected",
+            },
+            "quality_report": {"watertight": True},
+        }
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": lambda **kwargs: CaseSummary(
+                case_id="case-1",
+                case_name="demo",
+                status="completed",
+                best_candidate_id="cand-1",
+            ),
+            "list_cases": lambda: [],
+            "detect_bulb_region": fake_detect,
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+    try:
+        central_widget = window.centralWidget()
+        assert central_widget is not None
+        button = central_widget.findChild(QPushButton, "detect_bulb_region_button")
+        label = central_widget.findChild(QLabel, "bulb_region_preview_label")
+        assert button is not None
+        assert label is not None
+        assert label.text() == "Bulb region preview: not detected yet"
+
+        button.click()
+        app.processEvents()
+
+        text = label.text()
+        assert "auto_min=3.4" in text
+        assert "auto_max=4.0" in text
+        assert "axis=0" in text
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_case_wizard_exposes_bulb_region_override_fields(tmp_path: Path, monkeypatch) -> None:
+    """Spec §11.2: the engineer confirms or adjusts the auto-detected bulb
+    region. The wizard exposes axis_min/axis_max override fields that flow
+    into the CreateCaseCommand when filled, and stay None when blank.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    app = QApplication.instance() or QApplication([])
+    wizard = CaseWizard()
+    try:
+        min_input = wizard.findChild(QLineEdit, "bulb_region_axis_min_override_input")
+        max_input = wizard.findChild(QLineEdit, "bulb_region_axis_max_override_input")
+        assert min_input is not None
+        assert max_input is not None
+
+        # Blank inputs produce None overrides (pipeline falls back to auto-detection).
+        payload = wizard.payload()
+        assert payload["bulb_region_axis_min_override"] is None
+        assert payload["bulb_region_axis_max_override"] is None
+
+        # Numeric input flows through.
+        min_input.setText("1.25")
+        max_input.setText("2.5")
+        payload = wizard.payload()
+        assert payload["bulb_region_axis_min_override"] == 1.25
+        assert payload["bulb_region_axis_max_override"] == 2.5
+
+        # Garbage input is treated as no override instead of raising.
+        min_input.setText("not-a-number")
+        payload = wizard.payload()
+        assert payload["bulb_region_axis_min_override"] is None
+    finally:
+        wizard.close()
+        app.processEvents()
+
+
+def test_case_wizard_exposes_optimization_mode_selector(tmp_path: Path, monkeypatch) -> None:
+    """Spec §11.3/§11.4: the engineer chooses between generate_new_bulb and
+    local_optimize; the wizard's payload must reflect the selection.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    app = QApplication.instance() or QApplication([])
+    wizard = CaseWizard()
+    try:
+        combo = wizard.findChild(QComboBox, "optimization_mode_combo")
+        assert combo is not None
+        assert {combo.itemText(i) for i in range(combo.count())} == {
+            "generate_new_bulb",
+            "local_optimize",
+        }
+        # Default is generate_new_bulb.
+        assert wizard.payload()["optimization_mode"] == "generate_new_bulb"
+        # Switch to local_optimize.
+        local_index = combo.findText("local_optimize")
+        combo.setCurrentIndex(local_index)
+        assert wizard.payload()["optimization_mode"] == "local_optimize"
+    finally:
+        wizard.close()
+        app.processEvents()
+
+
+def test_main_window_resume_button_enabled_only_for_recoverable_cases(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Spec §10: the desktop should visibly offer continuation, and only for
+    cases that actually declare ``is_recoverable=True``.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    history_summaries = [
+        {
+            "case_id": "case-completed",
+            "case_name": "done",
+            "status": "completed",
+            "is_recoverable": False,
+            "updated_at": "2026-04-18T09:00:00+00:00",
+        },
+        {
+            "case_id": "case-failed",
+            "case_name": "failed-run",
+            "status": "failed",
+            "is_recoverable": True,
+            "updated_at": "2026-04-18T10:00:00+00:00",
+        },
+    ]
+    resume_calls: list[str] = []
+
+    def fake_resume(case_id: str):
+        resume_calls.append(case_id)
+        # Re-mark the case as recovered so history can update.
+        for summary in history_summaries:
+            if summary["case_id"] == case_id:
+                summary["status"] = "completed"
+                summary["is_recoverable"] = False
+        return CaseSummary(
+            case_id=case_id,
+            case_name="failed-run",
+            status="completed",
+            best_candidate_id="cand-1",
+        )
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": lambda **kwargs: CaseSummary(
+                case_id="case-unused",
+                case_name=str(kwargs["case_name"]),
+                status="completed",
+                best_candidate_id="cand-new",
+            ),
+            "resume_vertical_slice": fake_resume,
+            "list_cases": lambda: list(history_summaries),
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+    try:
+        central_widget = window.centralWidget()
+        assert central_widget is not None
+
+        resume_button = central_widget.findChild(QPushButton, "resume_case_button")
+        history_list = central_widget.findChild(QListWidget, "case_history_list_widget")
+
+        assert resume_button is not None
+        assert history_list is not None
+        assert history_list.count() == 2
+        # With nothing selected, resume must be disabled.
+        assert resume_button.isEnabled() is False
+
+        # Select the completed case: Resume stays disabled.
+        completed_row = next(
+            i for i in range(history_list.count()) if "case-completed" in history_list.item(i).text()
+        )
+        history_list.setCurrentRow(completed_row)
+        app.processEvents()
+        assert resume_button.isEnabled() is False
+
+        # Select the recoverable case: Resume is enabled.
+        failed_row = next(
+            i for i in range(history_list.count()) if "case-failed" in history_list.item(i).text()
+        )
+        history_list.setCurrentRow(failed_row)
+        app.processEvents()
+        assert resume_button.isEnabled() is True
+
+        (tmp_path / "projects" / "case-failed").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "projects" / "case-failed" / "artifacts_index.json").write_text("{}", encoding="utf-8")
+        resume_button.click()
+        app.processEvents()
+
+        assert resume_calls == ["case-failed"]
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_surfaces_case_history_panel(tmp_path: Path, monkeypatch) -> None:
+    """Spec §10 requires the desktop to surface existing cases so engineers can
+    pick one for continuation. This smoke test verifies the panel is rendered,
+    populated from ``services["list_cases"]``, and refreshed after a new run.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    call_log: dict[str, int] = {"list_cases_calls": 0}
+    history_state: list[list[dict]] = [
+        [
+            {
+                "case_id": "case-earlier",
+                "case_name": "earlier",
+                "status": "failed",
+                "is_recoverable": True,
+                "updated_at": "2026-04-18T09:00:00+00:00",
+            }
+        ]
+    ]
+
+    def fake_list_cases() -> list[dict]:
+        call_log["list_cases_calls"] += 1
+        return history_state[0]
+
+    def fake_runner(**kwargs):
+        history_state[0] = history_state[0] + [
+            {
+                "case_id": "case-new",
+                "case_name": str(kwargs["case_name"]),
+                "status": "completed",
+                "is_recoverable": False,
+                "updated_at": "2026-04-18T10:00:00+00:00",
+            }
+        ]
+        return CaseSummary(
+            case_id="case-new",
+            case_name=str(kwargs["case_name"]),
+            status="completed",
+            best_candidate_id="cand-1",
+        )
+
+    def fake_bootstrap(project_root: Path) -> dict[str, object]:
+        return {
+            "settings": SimpleNamespace(project_root=project_root),
+            "run_vertical_slice": fake_runner,
+            "list_cases": fake_list_cases,
+        }
+
+    monkeypatch.setattr(main_window_module, "bootstrap_application", fake_bootstrap)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(project_root=tmp_path / "projects")
+    try:
+        central_widget = window.centralWidget()
+        assert central_widget is not None
+
+        history_label = central_widget.findChild(QLabel, "case_history_summary_label")
+        history_list = central_widget.findChild(QListWidget, "case_history_list_widget")
+        run_button = central_widget.findChild(QPushButton, "run_vertical_slice_button")
+
+        assert history_label is not None
+        assert history_list is not None
+        assert "recoverable: 1" in history_label.text()
+        assert history_list.count() == 1
+        assert "case-earlier" in history_list.item(0).text()
+
+        # Stub the artifacts read path so the run doesn't blow up.
+        (tmp_path / "projects" / "case-new").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "projects" / "case-new" / "artifacts_index.json").write_text("{}", encoding="utf-8")
+
+        # Simulate a run.
+        run_button.click()
+        app.processEvents()
+
+        assert call_log["list_cases_calls"] >= 2
+        assert history_list.count() == 2
+        joined_items = "\n".join(history_list.item(i).text() for i in range(history_list.count()))
+        assert "case-new" in joined_items
+        assert "case-earlier" in joined_items
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_opens_case_report_and_best_candidate_artifacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
 

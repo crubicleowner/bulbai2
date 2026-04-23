@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 from typing import Any
 
-from bulbopt.domain.core.models import OptimizationCase
+from bulbopt.application.contracts.models import CreateCaseCommand
+from bulbopt.domain.core.models import CandidateVariant, CaseStatus, OptimizationCase
 from bulbopt.storage.filesystem.json_store import JsonStore
 
 
@@ -47,6 +48,76 @@ class FilesystemProjectRepository:
     def save_candidate_index(self, case_id: str, payload: list[dict[str, Any]]) -> None:
         case_dir = self._require_existing_case(case_id)
         self.json_store.write(case_dir / "candidate_index.json", payload)
+
+    def load_case(self, case_id: str) -> OptimizationCase:
+        """Re-hydrate a persisted ``OptimizationCase`` for resume (spec §10)."""
+        case_dir = self._require_existing_case(case_id)
+        payload = self.json_store.read(case_dir / "case.json")
+
+        status = payload.get("status", CaseStatus.DRAFT.value)
+        candidate_payloads = payload.get("candidates", []) or []
+        candidates = [
+            CandidateVariant(**{k: v for k, v in item.items() if k in {field.name for field in fields(CandidateVariant)}})
+            for item in candidate_payloads
+        ]
+        return OptimizationCase(
+            case_id=payload.get("case_id", case_id),
+            case_name=payload.get("case_name", ""),
+            status=CaseStatus(status),
+            created_at=payload.get("created_at", ""),
+            updated_at=payload.get("updated_at", ""),
+            is_recoverable=bool(payload.get("is_recoverable", False)),
+            source_path=payload.get("source_path"),
+            summary_metrics=payload.get("summary_metrics", {}) or {},
+            candidates=candidates,
+        )
+
+    def load_create_case_command(self, case_id: str) -> CreateCaseCommand:
+        """Reconstruct the ``CreateCaseCommand`` previously persisted into ``metadata.json``."""
+        case_dir = self._require_existing_case(case_id)
+        metadata_payload = self.json_store.read(case_dir / "metadata.json")
+        command_payload = metadata_payload.get("create_case_command") if isinstance(metadata_payload, dict) else None
+        if not isinstance(command_payload, dict):
+            raise ValueError(f"metadata.json for {case_id} does not contain a create_case_command block")
+        allowed_fields = {field.name for field in fields(CreateCaseCommand)}
+        cleaned = {key: value for key, value in command_payload.items() if key in allowed_fields}
+        return CreateCaseCommand(**cleaned)
+
+    def list_cases(self) -> list[dict[str, Any]]:
+        """Enumerate persisted cases so the UI can offer continuation (spec §10).
+
+        Returns a list of summaries ordered by ``updated_at`` descending (most
+        recently touched first). Non-case folders and case folders lacking a
+        readable ``case.json`` are skipped so a single bad case never breaks
+        the whole listing.
+        """
+
+        if not self.root_dir.exists():
+            return []
+
+        summaries: list[dict[str, Any]] = []
+        for child in sorted(self.root_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            case_json = child / "case.json"
+            if not case_json.exists():
+                continue
+            try:
+                payload = self.json_store.read(case_json)
+            except (OSError, ValueError):
+                continue
+            summaries.append(
+                {
+                    "case_id": payload.get("case_id", child.name),
+                    "case_name": payload.get("case_name", ""),
+                    "status": payload.get("status", "unknown"),
+                    "is_recoverable": bool(payload.get("is_recoverable", False)),
+                    "updated_at": payload.get("updated_at", ""),
+                }
+            )
+
+        summaries.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+        return summaries
 
     def _create_case_tree(self, case_dir: Path) -> None:
         for relative_path in [

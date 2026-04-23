@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pymeshfix
 import trimesh
 
 from bulbopt.storage.filesystem.json_store import JsonStore
@@ -12,15 +13,50 @@ class StubGeometryAdapter:
     def __init__(self, json_store: JsonStore | None = None) -> None:
         self._json_store = json_store or JsonStore()
 
-    def prepare_geometry(self, case_dir: Path, source_path: Path) -> dict:
+    def prepare_geometry(
+        self,
+        case_dir: Path,
+        source_path: Path,
+        bulb_region_override: dict[str, float] | None = None,
+    ) -> dict:
         source_bytes = source_path.read_bytes()
         input_copy_path = case_dir / "input" / source_path.name
         input_copy_path.write_bytes(source_bytes)
-        repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
-        repaired_path.write_bytes(source_bytes)
 
-        mesh = self._load_mesh(source_path)
-        analysis = self._build_geometry_analysis(mesh, repaired_path)
+        source_mesh = self._load_mesh(source_path)
+        before_stats = {
+            "vertices_count_before": int(len(source_mesh.vertices)),
+            "faces_count_before": int(len(source_mesh.faces)),
+            "watertight_before": bool(source_mesh.is_watertight),
+        }
+
+        repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
+        if before_stats["watertight_before"]:
+            repaired_path.write_bytes(source_bytes)
+            repaired_mesh = source_mesh
+            repaired = False
+            repair_status = "not_needed"
+        else:
+            try:
+                repaired_mesh = self._repair_with_pymeshfix(source_mesh)
+            except ValueError:
+                repaired_path.write_bytes(source_bytes)
+                repaired_mesh = source_mesh
+                repaired = False
+                repair_status = "failed"
+            else:
+                repaired_path.write_bytes(trimesh.exchange.stl.export_stl(repaired_mesh))
+                repaired = True
+                repair_status = "repaired"
+
+        analysis = self._build_geometry_analysis(
+            repaired_mesh,
+            repaired_path,
+            before_stats=before_stats,
+            repaired=repaired,
+            repair_status=repair_status,
+            bulb_region_override=bulb_region_override,
+        )
         self._json_store.write(case_dir / "working" / "repaired" / "geometry_analysis.json", analysis)
         self._update_artifacts_index(
             case_dir,
@@ -32,7 +68,42 @@ class StubGeometryAdapter:
         )
         return analysis
 
-    def generate_candidates(self, case_dir: Path, count: int) -> list[dict]:
+    def detect_bulb_region(self, source_path: Path) -> dict:
+        """Return a bulb-region preview without writing any artifacts (spec §11.2).
+
+        Used by the desktop "Detect Bulb Region" button so the engineer can
+        review the auto-detected axis_min/axis_max before deciding whether to
+        commit to a full run with or without an override.
+        """
+
+        source_mesh = self._load_mesh(source_path)
+        before_stats = {
+            "vertices_count_before": int(len(source_mesh.vertices)),
+            "faces_count_before": int(len(source_mesh.faces)),
+            "watertight_before": bool(source_mesh.is_watertight),
+        }
+        return self._build_geometry_analysis(
+            source_mesh,
+            repaired_path=source_path,
+            before_stats=before_stats,
+            repaired=False,
+            repair_status="preview_only",
+        )
+
+    def _repair_with_pymeshfix(self, mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+        fix = pymeshfix.MeshFix(np.asarray(mesh.vertices, dtype=float), np.asarray(mesh.faces, dtype=np.int64))
+        fix.repair()
+        repaired_mesh = trimesh.Trimesh(vertices=fix.points, faces=fix.faces, process=True)
+        if repaired_mesh.is_empty:
+            raise ValueError("PyMeshFix repair produced an empty mesh")
+        return repaired_mesh
+
+    def generate_candidates(
+        self,
+        case_dir: Path,
+        count: int,
+        optimization_mode: str = "generate_new_bulb",
+    ) -> list[dict]:
         repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
         analysis_path = case_dir / "working" / "repaired" / "geometry_analysis.json"
         mesh = self._load_mesh(repaired_path)
@@ -40,18 +111,19 @@ class StubGeometryAdapter:
 
         candidates: list[dict] = []
         candidate_paths: dict[str, str] = {}
-        for index, profile in enumerate(self._candidate_profiles(count), start=1):
+        for index, profile in enumerate(self._candidate_profiles(count, optimization_mode), start=1):
             candidate_id = f"candidate-{index}"
             candidate_path = case_dir / "working" / "candidates" / f"{candidate_id}.stl"
             candidate_mesh = self._deform_bow_region(mesh, analysis, profile)
             candidate_path.write_bytes(trimesh.exchange.stl.export_stl(candidate_mesh))
             candidate_paths[candidate_id] = str(candidate_path)
+            profile_with_mode = {**profile, "optimization_mode": optimization_mode}
             candidates.append(
                 {
                     "candidate_id": candidate_id,
                     "geometry_path": str(candidate_path),
                     "status": "generated",
-                    "generation_profile": profile,
+                    "generation_profile": profile_with_mode,
                     "bulb_region": analysis["bulb_region"],
                 }
             )
@@ -68,7 +140,16 @@ class StubGeometryAdapter:
         mesh.remove_unreferenced_vertices()
         return mesh
 
-    def _build_geometry_analysis(self, mesh: trimesh.Trimesh, repaired_path: Path) -> dict:
+    def _build_geometry_analysis(
+        self,
+        mesh: trimesh.Trimesh,
+        repaired_path: Path,
+        *,
+        before_stats: dict[str, int | bool] | None = None,
+        repaired: bool = False,
+        repair_status: str = "not_needed",
+        bulb_region_override: dict[str, float] | None = None,
+    ) -> dict:
         bounds = mesh.bounds.astype(float)
         extents = mesh.extents.astype(float)
         primary_axis = int(np.argmax(extents))
@@ -76,19 +157,43 @@ class StubGeometryAdapter:
         axis_min = float(axis_values.min())
         axis_max = float(axis_values.max())
         region_depth = max(float(extents[primary_axis]) * 0.15, 1e-6)
-        bulb_region_min = axis_max - region_depth
-        mask_ratio = float(np.mean(axis_values >= bulb_region_min))
+        auto_axis_min = axis_max - region_depth
+
+        # Apply user override while preserving the auto-detected value for the
+        # report (spec §11.2 + §14 engineering-honest reporting).
+        confirmed_axis_min = auto_axis_min
+        confirmed_axis_max = axis_max
+        confirmation_source = "auto_detected"
+        if bulb_region_override:
+            if "axis_min" in bulb_region_override and bulb_region_override["axis_min"] is not None:
+                confirmed_axis_min = float(bulb_region_override["axis_min"])
+                confirmation_source = "user_override"
+            if "axis_max" in bulb_region_override and bulb_region_override["axis_max"] is not None:
+                confirmed_axis_max = float(bulb_region_override["axis_max"])
+                confirmation_source = "user_override"
+
+        mask_ratio = float(np.mean(axis_values >= confirmed_axis_min))
 
         volume = 0.0
         if mesh.is_volume:
             volume = float(abs(mesh.volume))
 
+        before_stats = before_stats or {
+            "vertices_count_before": int(len(mesh.vertices)),
+            "faces_count_before": int(len(mesh.faces)),
+            "watertight_before": bool(mesh.is_watertight),
+        }
+
         return {
             "quality_report": {
                 "watertight": bool(mesh.is_watertight),
-                "repaired": False,
+                "repaired": bool(repaired),
+                "repair_status": str(repair_status),
                 "vertices_count": int(len(mesh.vertices)),
                 "faces_count": int(len(mesh.faces)),
+                "vertices_count_before": int(before_stats["vertices_count_before"]),
+                "faces_count_before": int(before_stats["faces_count_before"]),
+                "watertight_before": bool(before_stats["watertight_before"]),
                 "surface_area": float(mesh.area),
                 "volume": volume,
                 "bounds": bounds.tolist(),
@@ -98,29 +203,53 @@ class StubGeometryAdapter:
             "repaired_path": str(repaired_path),
             "bulb_region": {
                 "axis_index": primary_axis,
-                "axis_min": bulb_region_min,
-                "axis_max": axis_max,
+                "axis_min": confirmed_axis_min,
+                "axis_max": confirmed_axis_max,
                 "mask_ratio": mask_ratio,
+                "auto_axis_min": auto_axis_min,
+                "auto_axis_max": axis_max,
+                "confirmation_source": confirmation_source,
             },
         }
 
-    def _candidate_profiles(self, count: int) -> list[dict[str, float]]:
-        base_profiles = [
-            {"axial_push": 0.008, "beam_scale": 0.012, "draft_scale": -0.006},
-            {"axial_push": 0.014, "beam_scale": 0.02, "draft_scale": -0.01},
-            {"axial_push": 0.02, "beam_scale": 0.028, "draft_scale": -0.014},
-        ]
+    def _candidate_profiles(
+        self,
+        count: int,
+        optimization_mode: str = "generate_new_bulb",
+    ) -> list[dict[str, float]]:
+        """Per spec §11.3/§11.4 the two modes produce different deformation sets.
+
+        ``generate_new_bulb`` pushes the bow aggressively to create distinctly
+        different bulb candidates; ``local_optimize`` keeps amplitudes small
+        so the user gets local refinement of an already-existing bulb.
+        """
+        if optimization_mode == "local_optimize":
+            base_profiles = [
+                {"axial_push": 0.003, "beam_scale": 0.004, "draft_scale": -0.002},
+                {"axial_push": 0.005, "beam_scale": 0.006, "draft_scale": -0.003},
+                {"axial_push": 0.007, "beam_scale": 0.008, "draft_scale": -0.004},
+            ]
+            growth_step = (0.0015, 0.002, -0.001)
+        else:
+            base_profiles = [
+                {"axial_push": 0.008, "beam_scale": 0.012, "draft_scale": -0.006},
+                {"axial_push": 0.014, "beam_scale": 0.02, "draft_scale": -0.01},
+                {"axial_push": 0.02, "beam_scale": 0.028, "draft_scale": -0.014},
+            ]
+            growth_step = (0.003, 0.004, -0.002)
+
         if count <= len(base_profiles):
             return base_profiles[:count]
 
         profiles = list(base_profiles)
+        last_profile = base_profiles[-1]
         while len(profiles) < count:
             scale = len(profiles) - len(base_profiles) + 1
             profiles.append(
                 {
-                    "axial_push": 0.02 + (0.003 * scale),
-                    "beam_scale": 0.028 + (0.004 * scale),
-                    "draft_scale": -0.014 - (0.002 * scale),
+                    "axial_push": last_profile["axial_push"] + (growth_step[0] * scale),
+                    "beam_scale": last_profile["beam_scale"] + (growth_step[1] * scale),
+                    "draft_scale": last_profile["draft_scale"] + (growth_step[2] * scale),
                 }
             )
         return profiles

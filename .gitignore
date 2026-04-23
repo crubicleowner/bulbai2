@@ -7,4 +7,14 @@ build/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+.claude/
 bulbopt_projects/
+# OpenFOAM MinGW install dropped inside the workspace
+v2512/
+OpenFOAM-v*/
+# Local experiments / manual runs
+foam_projects/
+foam_test_projects/
+bm-out.txt
+bm-err.txt

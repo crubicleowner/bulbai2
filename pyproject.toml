@@ -10,9 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "jinja2>=3.1",
-  "numpy>=2.2",
+  "numpy>=1.26",
   "PySide6>=6.8",
   "pymeshfix>=0.17",
+  "pymoo>=0.6",
   "pyvista>=0.44",
   "trimesh>=4.6",
 ]
@@ -26,7 +27,7 @@ dev = [
 version = {attr = "bulbopt.__version__"}
 
 [tool.setuptools.package-data]
-bulbopt = ["reporting/templates/*.j2"]
+bulbopt = ["reporting/templates/*.j2", "reporting/templates/*.html"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
