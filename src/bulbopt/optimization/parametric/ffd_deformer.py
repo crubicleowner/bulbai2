@@ -47,6 +47,9 @@ class BulbFFDDeformer:
         self,
         force_port_starboard_symmetry: bool = True,
         post_smoothing_iterations: int = 3,
+        adaptive_subdivision: bool = True,
+        adaptive_min_triangles: int = 500,
+        adaptive_max_iterations: int = 3,
     ) -> None:
         """
         Parameters
@@ -64,9 +67,23 @@ class BulbFFDDeformer:
             preserved (volume drift ≤ 1% after 3 iterations) while the
             polygonal facet edges are rounded (spec 2026-04-23 §3 Fix C).
             Set to 0 to disable smoothing (useful for volume tests).
+        adaptive_subdivision:
+            Opt-in triangle densification before FFD (spec 2026-04-23 §4
+            L5). When True, the bulb region is subdivided up to
+            ``adaptive_max_iterations`` times until it contains at least
+            ``adaptive_min_triangles`` triangles, so FFD has enough
+            resolution to avoid polygonal facets in the output.
+        adaptive_min_triangles:
+            Triangle count threshold for the region. Default 500.
+        adaptive_max_iterations:
+            Hard cap on subdivision passes (prevents runaway on coarse
+            baselines). Default 3.
         """
         self.force_port_starboard_symmetry = bool(force_port_starboard_symmetry)
         self.post_smoothing_iterations = max(int(post_smoothing_iterations), 0)
+        self.adaptive_subdivision = bool(adaptive_subdivision)
+        self.adaptive_min_triangles = max(int(adaptive_min_triangles), 1)
+        self.adaptive_max_iterations = max(int(adaptive_max_iterations), 0)
 
     def deform(
         self,
@@ -85,6 +102,24 @@ class BulbFFDDeformer:
         axis_max = float(region["axis_max"])
         if axis_max <= axis_min:
             return mesh.copy()
+
+        # Spec 2026-04-23 §4 L5: densify the bulb region before FFD so we
+        # always have at least ``adaptive_min_triangles`` tris in the
+        # deformation zone. This is a no-op when the input already meets
+        # the threshold or the hook is disabled at __init__.
+        if self.adaptive_subdivision:
+            # Local import keeps the ffd_deformer module importable in
+            # environments where adaptive_subdivision has missing deps.
+            from bulbopt.optimization.parametric.adaptive_subdivision import (
+                subdivide_region,
+            )
+
+            mesh = subdivide_region(
+                mesh,
+                region,
+                min_triangles=self.adaptive_min_triangles,
+                max_iterations=self.adaptive_max_iterations,
+            )
 
         # Spec 2026-04-23 §3 Fix A: smooth blend across the boundary. The
         # participating region extends BLEND_WIDTH_FRACTION × (axis_max -

@@ -45,7 +45,10 @@ def test_deformer_preserves_face_topology() -> None:
     space = KrachtDesignSpace()
     vector = space.sample(n=1, seed=42)[0]
 
-    deformer = BulbFFDDeformer()
+    # Invariant only holds when adaptive subdivision is disabled — with
+    # the L5 hook active the baseline's 12-face box gets densified to
+    # ~500 region tris, so topology legitimately changes.
+    deformer = BulbFFDDeformer(adaptive_subdivision=False)
     deformed = deformer.deform(mesh, region, vector)
 
     assert len(deformed.faces) == len(mesh.faces)
@@ -59,7 +62,8 @@ def test_deformer_freezes_vertices_outside_bulb_region() -> None:
     space = KrachtDesignSpace()
     vector = space.sample(n=1, seed=7)[0]
 
-    deformer = BulbFFDDeformer()
+    # Vertex-index invariant only holds when subdivision is off.
+    deformer = BulbFFDDeformer(adaptive_subdivision=False)
     deformed = deformer.deform(mesh, region, vector)
 
     primary_axis = region["axis_index"]
@@ -88,7 +92,8 @@ def test_deformer_actually_moves_vertices_inside_region() -> None:
         }
     )
 
-    deformer = BulbFFDDeformer()
+    # Subdivision off so the vertex-index mask carries over unchanged.
+    deformer = BulbFFDDeformer(adaptive_subdivision=False)
     deformed = deformer.deform(mesh, region, vector)
 
     primary_axis = region["axis_index"]
@@ -220,7 +225,8 @@ def test_deformer_blends_smoothly_across_bulb_region_boundary() -> None:
         }
     )
 
-    deformer = BulbFFDDeformer()
+    # Subdivision off so the vertex-index mask carries over unchanged.
+    deformer = BulbFFDDeformer(adaptive_subdivision=False)
     deformed = deformer.deform(mesh, region, vector)
 
     primary = region["axis_index"]
