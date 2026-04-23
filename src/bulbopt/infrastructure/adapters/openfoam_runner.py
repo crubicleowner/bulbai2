@@ -18,6 +18,11 @@ class OpenFOAMRunnerAdapter:
     DEFAULT_SOLVER_CHAIN: tuple[tuple[str, ...], ...] = (
         ("blockMesh",),
         ("snappyHexMesh", "-overwrite"),
+        # checkMesh sits between snappyHexMesh and simpleFoam so we can
+        # fail the chain early when the generated mesh has illegal cells
+        # — simpleFoam on a broken mesh wastes minutes of CPU before
+        # blowing up with a cryptic error (mesh-quality design §4 Part B).
+        ("checkMesh",),
         ("simpleFoam",),
     )
 
@@ -120,6 +125,10 @@ class OpenFOAMRunnerAdapter:
                 subprocess_env.setdefault("FOAM_ETC", _shorten_path(str(wm_project_dir / "etc")))
         subprocess_cwd = _shorten_path(str(openfoam_case_dir))
 
+        from bulbopt.infrastructure.adapters.mesh_check_parser import (
+            parse_check_mesh_output,
+        )
+
         for command in self.DEFAULT_SOLVER_CHAIN:
             resolved_command = self._resolve_command(command, short_bin)
             solver_name = command[0]
@@ -152,6 +161,24 @@ class OpenFOAMRunnerAdapter:
                     overall_returncode = completed.returncode
                     failing_step = command[0]
                     break
+                # Fail the chain after checkMesh when illegal cells are
+                # reported, even if the checkMesh process itself returned
+                # zero — OpenFOAM tolerates illegal cells by convention
+                # but simpleFoam cannot solve on them.
+                if solver_name == "checkMesh":
+                    report = parse_check_mesh_output(stdout_text)
+                    step["check_mesh_report"] = {
+                        "max_non_orthogonality": report["max_non_orthogonality"],
+                        "max_skewness": report["max_skewness"],
+                        "max_aspect_ratio": report["max_aspect_ratio"],
+                        "n_illegal_cells": report["n_illegal_cells"],
+                        "failed_checks": report["failed_checks"],
+                        "mesh_ok": report["mesh_ok"],
+                    }
+                    if int(report["n_illegal_cells"]) > 0:
+                        overall_returncode = 1
+                        failing_step = "checkMesh"
+                        break
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
                 error_text = str(exc)
                 stderr_log_path.write_text(error_text, encoding="utf-8")
