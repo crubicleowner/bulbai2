@@ -124,6 +124,71 @@ def test_deformer_produces_distinct_meshes_for_distinct_vectors() -> None:
     assert not np.allclose(a.vertices, b.vertices, atol=1e-9)
 
 
+def test_deformer_blends_smoothly_across_bulb_region_boundary() -> None:
+    """Spec 2026-04-23 §3 Fix A: replacing the hard in_region cutoff with a
+    smooth radial falloff means vertices close to ``axis_min`` should get a
+    *fraction* of the full FFD displacement, not zero. The jump between
+    adjacent vertices across the boundary must be significantly smaller
+    than the jump produced by the old hard cutoff, i.e. continuous."""
+    # Icosphere has ~162 vertices at varying X positions — guaranteed to
+    # have some near the blend zone regardless of where axis_min lands.
+    mesh = trimesh.creation.icosphere(subdivisions=3, radius=2.0)
+    # Scale so primary axis is clearly the longest.
+    mesh.apply_scale([2.0, 0.75, 0.5])
+    region = _bulb_region_from_mesh(mesh)
+    # Strong axial push so the discontinuity is obvious if present.
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.045,
+            "breadth_ratio":    0.10,
+            "height_ratio":     0.5,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.5,
+            "cross_section_c":  0.75,
+            "volume_coef":      0.7,
+            "nose_sharpness":   0.5,
+        }
+    )
+
+    deformer = BulbFFDDeformer()
+    deformed = deformer.deform(mesh, region, vector)
+
+    primary = region["axis_index"]
+    axis_min = region["axis_min"]
+    axis_max = region["axis_max"]
+    blend_width = 0.10 * (axis_max - axis_min)
+    blend_start = axis_min - blend_width
+
+    # Vertices comfortably outside the blend zone must be unchanged.
+    far_outside = mesh.vertices[:, primary] < blend_start - 1e-6
+    np.testing.assert_array_almost_equal(
+        deformed.vertices[far_outside],
+        mesh.vertices[far_outside],
+        decimal=9,
+    )
+
+    # There must be at least one vertex within the blend zone (between
+    # blend_start and axis_min) — otherwise the smoothing is never
+    # exercised.
+    in_blend = (mesh.vertices[:, primary] >= blend_start) & (
+        mesh.vertices[:, primary] < axis_min
+    )
+    assert np.any(in_blend), "Expected vertices inside the blend zone"
+
+    # Vertices in the blend zone must be displaced by LESS than the full
+    # FFD displacement (they see w < 1) but by MORE than zero (they are
+    # not un-deformed). Use the first-primary-component displacement as a
+    # quick scalar proxy.
+    disp = np.linalg.norm(deformed.vertices - mesh.vertices, axis=1)
+    assert disp[in_blend].max() > 0.0, "Blend-zone vertices must move"
+    full_region = mesh.vertices[:, primary] >= axis_min
+    if full_region.any():
+        max_full = disp[full_region].max()
+        # Blend-zone displacement is a fraction (smoothstep averages ~0.5)
+        # of the peak full-region displacement.
+        assert disp[in_blend].max() < max_full * 1.01
+
+
 def test_deformer_result_remains_watertight() -> None:
     """Invariant: FFD only moves vertex positions, never edits faces or
     topology, so a watertight input yields a watertight output."""

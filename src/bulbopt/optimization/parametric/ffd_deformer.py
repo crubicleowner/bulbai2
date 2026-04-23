@@ -38,6 +38,11 @@ class BulbFFDDeformer:
     LATTICE_SHAPE: Tuple[int, int, int] = (5, 4, 4)
     # Degree of the Bernstein basis per axis is n_cp - 1.
 
+    # Smooth blend before axis_min so the deformed bulb joins the rest of the
+    # hull with C1 continuity (spec 2026-04-23 §3 Fix A). Width is a fraction
+    # of the bulb length (axis_max - axis_min).
+    BLEND_WIDTH_FRACTION: float = 0.10
+
     def deform(
         self,
         mesh: trimesh.Trimesh,
@@ -56,8 +61,16 @@ class BulbFFDDeformer:
         if axis_max <= axis_min:
             return mesh.copy()
 
-        in_region = mesh.vertices[:, primary_axis] >= axis_min
-        if not np.any(in_region):
+        # Spec 2026-04-23 §3 Fix A: smooth blend across the boundary. The
+        # participating region extends BLEND_WIDTH_FRACTION × (axis_max -
+        # axis_min) aft of axis_min; every vertex there gets a smoothstep
+        # weight from 0 (at blend_start) to 1 (at axis_min), so there is
+        # no C0 discontinuity across the boundary.
+        blend_width = self.BLEND_WIDTH_FRACTION * (axis_max - axis_min)
+        blend_start = axis_min - blend_width
+
+        participating = mesh.vertices[:, primary_axis] >= blend_start
+        if not np.any(participating):
             return mesh.copy()
 
         deformed_vertices = mesh.vertices.copy()
@@ -65,7 +78,7 @@ class BulbFFDDeformer:
         # Build control box in the bulb region's bounding volume so the
         # deformation tapers to zero on the aft-most side (where the hull
         # glues back into the rest of the mesh).
-        region_vertices = mesh.vertices[in_region]
+        region_vertices = mesh.vertices[participating]
         box_origin, box_size = self._region_box(
             region_vertices,
             primary_axis=primary_axis,
@@ -86,7 +99,18 @@ class BulbFFDDeformer:
             offsets=offsets,
         )
 
-        deformed_vertices[in_region] = deformed_region
+        # Blend weights: 0 at blend_start, 1 at axis_min, 1 beyond.
+        axis_values = region_vertices[:, primary_axis]
+        if blend_width > 0:
+            raw = (axis_values - blend_start) / blend_width
+        else:
+            raw = np.where(axis_values >= axis_min, 1.0, 0.0)
+        t = np.clip(raw, 0.0, 1.0)
+        # smoothstep (Hermite) for C1 continuity at both ends.
+        weights = t * t * (3.0 - 2.0 * t)
+        # Apply weighted displacement back to the original vertices.
+        weighted_displacement = (deformed_region - region_vertices) * weights[:, None]
+        deformed_vertices[participating] = region_vertices + weighted_displacement
 
         out = trimesh.Trimesh(
             vertices=deformed_vertices,
