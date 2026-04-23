@@ -124,6 +124,71 @@ def test_deformer_produces_distinct_meshes_for_distinct_vectors() -> None:
     assert not np.allclose(a.vertices, b.vertices, atol=1e-9)
 
 
+def test_deformer_output_is_mirror_symmetric_around_beam_midplane() -> None:
+    """Spec 2026-04-23 §3 Fix B: after FFD the deformed mesh must be
+    mirror-symmetric around the beam midplane EVEN when the baseline mesh
+    is slightly asymmetric (most real hull STLs have tiny triangulation
+    asymmetries). The deformer must ENFORCE symmetry, not just preserve
+    it."""
+    # Introduce a deliberate asymmetry in the baseline: shift random
+    # vertices on the +y side by a tiny amount so the box is no longer
+    # bit-symmetric around y=0.
+    mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
+    mesh = mesh.subdivide().subdivide()
+    # Bias +y vertices slightly outward.
+    mesh.vertices[mesh.vertices[:, 1] > 0, 1] += 0.01
+    # Confirm baseline IS asymmetric.
+    plus_y = mesh.vertices[mesh.vertices[:, 1] > 0, 1]
+    minus_y = -mesh.vertices[mesh.vertices[:, 1] < 0, 1]
+    assert not np.allclose(sorted(plus_y), sorted(minus_y), atol=1e-6), (
+        "Baseline should be intentionally asymmetric to exercise the fix"
+    )
+    region = _bulb_region_from_mesh(mesh)
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.03,
+            "breadth_ratio":    0.15,
+            "height_ratio":     0.45,
+            "axis_z_ratio":     0.3,
+            "longitudinal_pos": 0.6,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.65,
+            "nose_sharpness":   0.4,
+        }
+    )
+
+    deformer = BulbFFDDeformer()
+    deformed = deformer.deform(mesh, region, vector)
+
+    primary = region["axis_index"]
+    beam = [i for i in range(3) if i != primary][0]
+    other = [i for i in range(3) if i not in (primary, beam)][0]
+
+    # For every vertex on the +beam side, find the closest vertex on the
+    # -beam side that matches on (primary, other). They must be reflections.
+    plus_mask = deformed.vertices[:, beam] > 1e-9
+    minus_mask = deformed.vertices[:, beam] < -1e-9
+    plus = deformed.vertices[plus_mask]
+    minus = deformed.vertices[minus_mask]
+    assert len(plus) == len(minus), (
+        f"+beam={len(plus)} vs -beam={len(minus)} — count mismatch breaks mirroring"
+    )
+
+    # For each +beam vertex, the mirrored point (primary, -beam, other)
+    # must exist among -beam vertices within a small tolerance.
+    mirrored_plus = plus.copy()
+    mirrored_plus[:, beam] *= -1.0
+    # Cheap O(n²) closest-point match (N is small).
+    diagonal = float(np.linalg.norm(mesh.extents))
+    tolerance = 1e-6 * diagonal
+    for p in mirrored_plus:
+        distances = np.linalg.norm(minus - p, axis=1)
+        assert distances.min() < tolerance, (
+            f"No mirror partner within {tolerance:.2e} for vertex {p}; "
+            f"closest distance was {distances.min():.2e}"
+        )
+
+
 def test_deformer_blends_smoothly_across_bulb_region_boundary() -> None:
     """Spec 2026-04-23 §3 Fix A: replacing the hard in_region cutoff with a
     smooth radial falloff means vertices close to ``axis_min`` should get a

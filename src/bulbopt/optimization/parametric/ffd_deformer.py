@@ -43,6 +43,19 @@ class BulbFFDDeformer:
     # of the bulb length (axis_max - axis_min).
     BLEND_WIDTH_FRACTION: float = 0.10
 
+    def __init__(self, force_port_starboard_symmetry: bool = True) -> None:
+        """
+        Parameters
+        ----------
+        force_port_starboard_symmetry:
+            When True (default), the deformer enforces mirror symmetry of
+            the output mesh around the beam midplane (spec 2026-04-23 §3
+            Fix B). This is defensive: even if the baseline STL has tiny
+            triangulation asymmetries, the engineer still gets a
+            mirror-clean bulb.
+        """
+        self.force_port_starboard_symmetry = bool(force_port_starboard_symmetry)
+
     def deform(
         self,
         mesh: trimesh.Trimesh,
@@ -111,6 +124,14 @@ class BulbFFDDeformer:
         # Apply weighted displacement back to the original vertices.
         weighted_displacement = (deformed_region - region_vertices) * weights[:, None]
         deformed_vertices[participating] = region_vertices + weighted_displacement
+
+        if self.force_port_starboard_symmetry:
+            other_axes = [a for a in range(3) if a != primary_axis]
+            beam_axis = other_axes[0]
+            deformed_vertices = _enforce_mirror_symmetry(
+                vertices=deformed_vertices,
+                beam_axis=beam_axis,
+            )
 
         out = trimesh.Trimesh(
             vertices=deformed_vertices,
@@ -278,3 +299,59 @@ def _bernstein(degree: int, index: int, t: np.ndarray) -> np.ndarray:
     """Compute B_index^degree(t) for an array of parameters t ∈ [0, 1]."""
     coeff = comb(degree, index)
     return coeff * (t ** index) * ((1.0 - t) ** (degree - index))
+
+
+def _enforce_mirror_symmetry(
+    vertices: np.ndarray,
+    beam_axis: int,
+) -> np.ndarray:
+    """Make the vertex cloud mirror-symmetric around the beam midplane.
+
+    Algorithm (correctness over performance; meshes used here have
+    hundreds of vertices at most):
+
+    1. For every vertex v compute its mirror image v' (flip beam).
+    2. Find the vertex w closest to v' in the current mesh.
+    3. Assign v = (v + mirror(w)) / 2 and w = (mirror(v) + w) / 2.
+
+    Vertices that are self-mirror (very close to the midplane) become
+    their own partner and get pinned to the midplane.
+    """
+    symmetric = vertices.copy()
+    n = len(symmetric)
+    if n == 0:
+        return symmetric
+
+    # Mirror images of every vertex.
+    mirrors = symmetric.copy()
+    mirrors[:, beam_axis] *= -1.0
+
+    # For each vertex, find its closest mirror partner. Distances[i, j]
+    # = |mirror(vertex_i) - vertex_j|.  O(N²) but N is mesh-sized (hundreds).
+    diff = mirrors[:, None, :] - symmetric[None, :, :]
+    distances = np.linalg.norm(diff, axis=2)
+    partner = distances.argmin(axis=1)
+
+    # Iterate over unordered pairs (i, j) where j = partner[i]. A vertex
+    # whose partner is itself (i == j) gets pinned to the midplane.
+    paired: set[int] = set()
+    for i in range(n):
+        if i in paired:
+            continue
+        j = int(partner[i])
+        if i == j:
+            symmetric[i, beam_axis] = 0.0
+            paired.add(i)
+            continue
+        if j in paired:
+            continue  # j was already matched to a different k; leave i alone
+        # Swap-symmetric average of vertex_i and mirror(vertex_j).
+        avg = 0.5 * (symmetric[i] + mirrors[j])
+        symmetric[i] = avg
+        mirrored_avg = avg.copy()
+        mirrored_avg[beam_axis] *= -1.0
+        symmetric[j] = mirrored_avg
+        paired.add(i)
+        paired.add(j)
+
+    return symmetric
