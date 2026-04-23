@@ -202,6 +202,7 @@ class BulbFFDDeformer:
                 out,
                 primary_axis=primary_axis,
                 blend_start=blend_start,
+                blend_width=blend_width,
                 iterations=self.post_smoothing_iterations,
             )
             # Re-assert symmetry after smoothing (Laplacian can drift
@@ -334,6 +335,22 @@ class BulbFFDDeformer:
                     (1.0 if k == n_cp - 1 else -1.0) * taper * box_size[draft_axis] * 0.1
                 )
 
+        # F5 (mesh-quality design §4): clamp per-lattice-point offset so
+        # no single control point moves farther than half the local cell
+        # spacing along any axis. This prevents triangle inversion near
+        # the nose tip when ``longitudinal_pos`` + low ``nose_sharpness``
+        # push two lattice columns past each other — the failure mode
+        # Agent 1 saw as 66–76 flipped triangles in the generated mesh.
+        spacing = np.zeros(3, dtype=float)
+        spacing[axis_primary] = box_size[axis_primary] / max(l_cp - 1, 1)
+        spacing[beam_axis] = box_size[beam_axis] / max(m_cp - 1, 1)
+        spacing[draft_axis] = box_size[draft_axis] / max(n_cp - 1, 1)
+        max_offset = 0.5 * spacing  # 3-vector, broadcasts over (l, m, n)
+        # Protect against a degenerate zero-width box direction.
+        safe_max = np.where(max_offset > 0, max_offset, 1.0)
+        # Clamp symmetrically per axis.
+        np.clip(offsets, -safe_max, safe_max, out=offsets)
+
         return offsets
 
     # ---- core FFD ---------------------------------------------------------
@@ -383,6 +400,7 @@ def _apply_taubin_to_region(
     *,
     primary_axis: int,
     blend_start: float,
+    blend_width: float,
     iterations: int,
     lamb: float = 0.5,
     nu: float = -0.53,
@@ -391,15 +409,29 @@ def _apply_taubin_to_region(
 
     Done in-place on ``mesh.vertices``. Vertices outside the region
     (axis < blend_start) are explicitly held fixed so the rest of the
-    hull triangulation never moves.
+    hull triangulation never moves. Inside the blend zone the Taubin
+    update is multiplied by a smoothstep weight that rises from 0 at
+    ``blend_start`` to 1 at ``blend_start + blend_width`` (mesh-quality
+    design §4 Fix F4) — this prevents the C0 discontinuity the original
+    binary mask introduced right at the bulb boundary.
 
     The classic Taubin parameters (λ=0.5, ν=-0.53) satisfy
     λν / (λ+ν) ≈ -0.22 which preserves frequencies below the cutoff —
     low-frequency shape survives, facet edges flatten.
 
+    Critical fix F1 (mesh-quality design §4): build the adjacency graph
+    on position-welded vertices rather than raw index-per-face vertices.
+    STL loaders typically produce 3 unique vertices per face (no index
+    sharing, degree-2 graph), which used to make Taubin collapse the
+    mesh by -99% volume. Welding by position (6-decimal quantisation)
+    recovers the true surface topology; the welded Laplacian is applied
+    per unique position and then scattered back to the original vertex
+    array, so the mesh's topology (face indices, vertex count) is
+    preserved bit-identical.
+
     Implementation is fully vectorised: we build a sparse CSR Laplacian
     once (edges derived from faces via numpy, no Python loops) and then
-    each smoothing step is one ``L @ vertices`` matrix-vector product.
+    each smoothing step is one ``A @ positions`` matrix-vector product.
     On a 14 k-vertex hull the previous Python-loop version took ~30 s;
     the vectorised version completes in ~50 ms.
     """
@@ -410,41 +442,98 @@ def _apply_taubin_to_region(
     if n == 0 or iterations <= 0:
         return
 
-    # Edges (undirected) from faces, de-duplicated.
+    # ---- F1: weld coincident vertices by position ------------------------
+    #
+    # Rounding to 6 decimals matches trimesh.grouping.merge_vertices_hash.
+    # ``inverse`` is a length-n array: inverse[k] = the unique-position
+    # index that vertices[k] belongs to. Duplicated STL vertices collapse
+    # onto a single node in the welded graph so Taubin operates on the
+    # proper connected mesh topology.
+    rounded = np.round(vertices, decimals=6)
+    unique_positions, inverse = np.unique(rounded, axis=0, return_inverse=True)
+    n_unique = int(unique_positions.shape[0])
+
+    # Welded face indices: each face's three vertex indices map onto the
+    # unique-position space.
     faces = np.asarray(mesh.faces, dtype=np.int64)
+    welded_faces = inverse[faces]
+
+    # Edges (undirected) in the welded graph, de-duplicated. Drop self-
+    # edges introduced by degenerate faces (all three corners welded onto
+    # one node) — they only inflate the diagonal.
     edges = np.concatenate(
-        [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]],
+        [
+            welded_faces[:, [0, 1]],
+            welded_faces[:, [1, 2]],
+            welded_faces[:, [2, 0]],
+        ],
         axis=0,
     )
-    edges = np.sort(edges, axis=1)
-    edges = np.unique(edges, axis=0)
+    edges = edges[edges[:, 0] != edges[:, 1]]
     if len(edges) == 0:
         return
+    edges = np.sort(edges, axis=1)
+    edges = np.unique(edges, axis=0)
 
-    # Symmetric adjacency with 1 / degree_i weights so (L @ v)[i] equals
-    # (mean of neighbours) - v[i].
+    # Symmetric adjacency on welded graph with 1 / degree_i weights so
+    # (A @ positions)[i] = mean(neighbours of i).
     rows = np.concatenate([edges[:, 0], edges[:, 1]])
     cols = np.concatenate([edges[:, 1], edges[:, 0]])
-    degree = np.bincount(rows, minlength=n).astype(float)
-    # Avoid division by zero for isolated vertices (shouldn't happen in
-    # a watertight mesh but cheap insurance).
+    degree = np.bincount(rows, minlength=n_unique).astype(float)
     safe_degree = np.where(degree > 0, degree, 1.0)
     weights = 1.0 / safe_degree[rows]
-    adjacency = csr_matrix((weights, (rows, cols)), shape=(n, n))
-    identity_diag = np.ones(n)
-    # Laplacian L = A - I so (L @ v)[i] = mean(neighbours) - v[i].
-    # We just subtract v after each A @ v to avoid building L explicitly.
+    adjacency = csr_matrix((weights, (rows, cols)), shape=(n_unique, n_unique))
 
-    movable_mask = vertices[:, primary_axis] >= blend_start
-    original_frozen = vertices[~movable_mask].copy()
+    # ---- F4: smoothstep weight on raw vertices instead of binary mask ----
+    #
+    # ``taper`` is 1 inside the bulb region, 0 outside ``blend_start``, and
+    # smoothly 0→1 across the blend zone so the smoothing doesn't clip at
+    # the boundary and there is no C0 discontinuity across it.
+    raw_axis = vertices[:, primary_axis]
+    if blend_width > 0:
+        t_raw = (raw_axis - blend_start) / blend_width
+    else:
+        t_raw = np.where(raw_axis >= blend_start, 1.0, 0.0)
+    t_raw = np.clip(t_raw, 0.0, 1.0)
+    vertex_taper = t_raw * t_raw * (3.0 - 2.0 * t_raw)
+
+    # Welded-space taper: max over all raw vertices mapped onto each
+    # unique position, so a unique node is "movable" if any of its
+    # duplicates participate in the deformation.
+    welded_taper = np.zeros(n_unique, dtype=float)
+    np.maximum.at(welded_taper, inverse, vertex_taper)
+    welded_taper_col = welded_taper[:, None]
+
+    original = vertices.copy()
+
+    # Taubin runs on welded positions; compute welded positions as the
+    # mean of their duplicates' raw positions.
+    welded_positions = np.zeros((n_unique, 3), dtype=float)
+    counts = np.bincount(inverse, minlength=n_unique).astype(float)
+    safe_counts = np.where(counts > 0, counts, 1.0)
+    for dim in range(3):
+        welded_positions[:, dim] = (
+            np.bincount(inverse, weights=vertices[:, dim], minlength=n_unique)
+            / safe_counts
+        )
 
     for _ in range(iterations):
         for step in (lamb, nu):
-            neighbour_means = adjacency @ vertices
-            laplacian = neighbour_means - vertices * identity_diag[:, None]
-            vertices = vertices + step * laplacian
-            # Keep non-region vertices bit-identical.
-            vertices[~movable_mask] = original_frozen
+            neighbour_means = adjacency @ welded_positions
+            laplacian = neighbour_means - welded_positions
+            welded_positions = welded_positions + step * laplacian * welded_taper_col
+
+    # Scatter welded positions back onto the raw vertex array.
+    vertices = welded_positions[inverse]
+    # F4: blend the smoothed positions with the originals using the raw
+    # taper so the transition at the blend boundary stays continuous
+    # (welded_taper is per-unique-node, but duplicates of a mixed node
+    # sit at different raw axis coordinates; the raw taper respects
+    # that).
+    vertices = (
+        original * (1.0 - vertex_taper[:, None])
+        + vertices * vertex_taper[:, None]
+    )
 
     mesh.vertices = vertices
 
@@ -496,14 +585,27 @@ def _enforce_mirror_symmetry_subset(
     bbox_diag = float(np.linalg.norm(subset.max(axis=0) - subset.min(axis=0)))
     threshold = 0.02 * bbox_diag if bbox_diag > 0 else 1e-6
 
+    # F3 (mesh-quality design §4): snapping a self-pair (vertex whose
+    # own nearest-mirror is itself) to beam=0 used to collapse any
+    # off-centerline vertex without a real mirror partner — e.g. the
+    # bottom flange produced 113 vertices with |beam| up to 0.60 m
+    # snapped flat to zero, producing the "broken flap" visible in the
+    # user's screenshots. Self-pairs are now only collapsed if the
+    # vertex is *already* within ``threshold`` of the beam midplane;
+    # anything farther out is left at its original position.
     paired: set[int] = set()
     for local_i in range(len(subset)):
         if local_i in paired:
             continue
         local_j = int(partners[local_i])
         if local_i == local_j:
-            global_i = int(subset_indices[local_i])
-            symmetric[global_i, beam_axis] = 0.0
+            # Only snap a self-paired vertex to the centerline when it
+            # really sits near it already (|beam| < threshold). Farther
+            # vertices are leftovers of an asymmetric triangulation and
+            # must keep their coordinates.
+            if abs(float(subset[local_i][beam_axis])) < threshold:
+                global_i = int(subset_indices[local_i])
+                symmetric[global_i, beam_axis] = 0.0
             paired.add(local_i)
             continue
         if not mutual[local_i]:

@@ -324,3 +324,169 @@ def test_deformer_result_remains_watertight() -> None:
     deformer = BulbFFDDeformer()
     deformed = deformer.deform(mesh, region, vector)
     assert deformed.is_watertight
+
+
+def _vertex_duplicated_hull() -> trimesh.Trimesh:
+    """Synthesise an icosphere with each face's three vertices unique
+    (3x vertex count, no sharing) — the pathological layout produced by
+    trimesh.load on an STL without an explicit merge_vertices call,
+    which Agent 1 diagnosed as the root cause of -99% volume Taubin
+    collapse."""
+    base = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    base.apply_scale([2.0, 0.75, 0.5])
+    # Expand: create new vertex array with 3× the entries, rewrite faces.
+    new_vertices = base.vertices[base.faces.reshape(-1)]
+    new_faces = np.arange(len(new_vertices), dtype=np.int64).reshape(-1, 3)
+    duplicated = trimesh.Trimesh(
+        vertices=new_vertices,
+        faces=new_faces,
+        process=False,
+    )
+    # Baseline sanity: this mesh is unshared (3×V == 3×F).
+    assert len(duplicated.vertices) == 3 * len(base.faces)
+    return duplicated
+
+
+def test_taubin_does_not_collapse_mesh_with_duplicated_vertices() -> None:
+    """F1 regression: the real docs/base_hull.stl has 3 vertices per
+    face with zero index-sharing. Before the fix, Taubin ran on a
+    degree-2 graph and collapsed the mesh by -99% volume. After welding
+    by position the smoothing operates on the real topology."""
+    mesh = _vertex_duplicated_hull()
+    region = _bulb_region_from_mesh(mesh)
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.03,
+            "breadth_ratio":    0.12,
+            "height_ratio":     0.4,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.55,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.6,
+            "nose_sharpness":   0.4,
+        }
+    )
+    # Subdivision is irrelevant here — we're testing Taubin on unshared topology.
+    deformer_raw = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=0,
+        adaptive_subdivision=False,
+    )
+    deformer_smoothed = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=3,
+        adaptive_subdivision=False,
+    )
+    raw = deformer_raw.deform(mesh, region, vector)
+    smoothed = deformer_smoothed.deform(mesh, region, vector)
+
+    raw_volume = float(abs(raw.volume))
+    smoothed_volume = float(abs(smoothed.volume))
+    drift = abs(smoothed_volume - raw_volume) / max(raw_volume, 1e-12)
+    # The disconnected-graph bug produced drifts >50% — anything under
+    # 5% proves the welded Laplacian is doing the right thing on an
+    # STL-pathological mesh.
+    assert drift < 0.05, (
+        f"Welded Taubin collapsed volume by {drift*100:.1f}% "
+        f"(raw={raw_volume:.3f}, smoothed={smoothed_volume:.3f})"
+    )
+
+
+def test_symmetry_does_not_snap_off_centerline_vertices_to_zero() -> None:
+    """F3 regression: the self-pair branch used to pin any vertex with
+    no mirror partner to beam=0, which collapsed the bottom flange
+    (113 vertices with |beam| up to 0.60 m). After the fix, self-paired
+    vertices farther than the mirror threshold from the centerline keep
+    their original beam coordinate."""
+    mesh = _watertight_hull()
+    # Nudge every +y vertex so some have no natural mirror pair in the
+    # mesh — they will self-pair in the kd-tree query.
+    mesh = mesh.subdivide().subdivide()
+    mesh.vertices[mesh.vertices[:, 1] > 0.3, 1] += 0.2
+    region = _bulb_region_from_mesh(mesh)
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.03,
+            "breadth_ratio":    0.1,
+            "height_ratio":     0.4,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.5,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.6,
+            "nose_sharpness":   0.4,
+        }
+    )
+    deformer = BulbFFDDeformer(
+        force_port_starboard_symmetry=True,
+        post_smoothing_iterations=0,
+        adaptive_subdivision=False,
+    )
+    deformed = deformer.deform(mesh, region, vector)
+
+    primary = region["axis_index"]
+    beam = [i for i in range(3) if i != primary][0]
+    in_region = mesh.vertices[:, primary] >= region["axis_min"]
+    # Count off-centerline vertices (|y| > 0.3) that were at |y| > 0.3
+    # before deformation and are now flat at beam=0. A correct symmetry
+    # pass must leave them alone when they have no real mirror.
+    originally_off = (np.abs(mesh.vertices[:, beam]) > 0.3) & in_region
+    collapsed_to_zero = np.abs(deformed.vertices[originally_off, beam]) < 1e-6
+    # Before the fix, many of these got snapped to zero. After the fix,
+    # none of them should.
+    assert not collapsed_to_zero.any(), (
+        f"Symmetry snapped {int(collapsed_to_zero.sum())} off-centerline "
+        f"vertices to beam=0 — F3 regression"
+    )
+
+
+def test_ffd_amplitude_clamp_prevents_triangle_inversion() -> None:
+    """F5 regression: the high-``longitudinal_pos`` + low-``nose_sharpness``
+    corner of Kracht space used to produce 66–76 flipped triangles in
+    the nose tip. After clamping per-lattice-point offset to half the
+    cell spacing, the deformed mesh must keep ≥99% of its faces with
+    their original orientation."""
+    mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    mesh.apply_scale([2.0, 0.75, 0.5])
+    region = _bulb_region_from_mesh(mesh)
+    # Extreme adversarial vector: push length to max, sharpen the nose.
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.05,
+            "breadth_ratio":    0.15,
+            "height_ratio":     0.5,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.95,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.9,
+            "nose_sharpness":   0.05,
+        }
+    )
+    deformer = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=0,
+        adaptive_subdivision=False,
+    )
+    original = mesh
+    deformed = deformer.deform(mesh, region, vector)
+
+    # Face orientation proxy: sign of the scalar triple product of face
+    # edge vectors against the centroid-outward direction. A flipped
+    # face has the opposite sign from the baseline.
+    def face_orientations(m: trimesh.Trimesh) -> np.ndarray:
+        tri = m.vertices[m.faces]
+        a = tri[:, 1] - tri[:, 0]
+        b = tri[:, 2] - tri[:, 0]
+        normal = np.cross(a, b)
+        centroid = tri.mean(axis=1)
+        outward = centroid - m.centroid
+        # Positive when the normal points outward.
+        return np.sign(np.einsum("ij,ij->i", normal, outward))
+
+    orig_signs = face_orientations(original)
+    defo_signs = face_orientations(deformed)
+    flipped = (orig_signs * defo_signs) < 0.0
+    flip_ratio = float(flipped.sum()) / float(max(len(defo_signs), 1))
+    assert flip_ratio < 0.01, (
+        f"FFD clamp failed: {flip_ratio*100:.2f}% of faces flipped "
+        f"({int(flipped.sum())}/{len(defo_signs)})"
+    )
