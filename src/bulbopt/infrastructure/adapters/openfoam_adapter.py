@@ -79,11 +79,13 @@ def _detect_wsl_openfoam(timeout_seconds: int = 20) -> dict[str, str] | None:
         return None
     if distros.returncode != 0:
         return None
-    distro_bytes = distros.stdout or b""
-    if b"\x00" in distro_bytes:
-        distro_text = distro_bytes.decode("utf-16le", errors="replace")
+    distro_output = distros.stdout or b""
+    if isinstance(distro_output, str):
+        distro_text = distro_output
+    elif b"\x00" in distro_output:
+        distro_text = distro_output.decode("utf-16le", errors="replace")
     else:
-        distro_text = distro_bytes.decode(errors="replace")
+        distro_text = distro_output.decode(errors="replace")
     distro_text = distro_text.replace("\r", "\n")
     distro_names = [
         line.strip()

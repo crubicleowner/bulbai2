@@ -59,6 +59,7 @@ class SimpleFoamHighFidelityGate:
     reference_velocity_m_s: float | None = None
     reference_area_m2: float | None = None
     fluid_density_kg_m3: float | None = None
+    evaluation_records: list[dict] = field(init=False, default_factory=list)
     _baseline_volume: float = field(init=False, default=0.0)
     _design_space: KrachtDesignSpace = field(init=False)
 
@@ -75,7 +76,17 @@ class SimpleFoamHighFidelityGate:
         return objectives
 
     def _evaluate_one(self, vector: KrachtVector) -> List[float]:
-        if self._design_space.constraint_violations(vector):
+        constraint_violations = self._design_space.constraint_violations(vector)
+        if constraint_violations:
+            self.evaluation_records.append(
+                {
+                    "parameters": dict(vector.values),
+                    "solver_status": "skipped",
+                    "solver_reason": "constraint_violation",
+                    "constraint_violations": list(constraint_violations),
+                    "objectives": [1e9, 1e9],
+                }
+            )
             return [1e9, 1e9]
 
         deformed = self.deformer.deform(self.baseline_mesh, self.region, vector)
@@ -89,6 +100,14 @@ class SimpleFoamHighFidelityGate:
 
         drag_proxy = _drag_proxy(deformed, self.region)
         volume_delta = _volume_delta(deformed, self._baseline_volume)
+        record = {
+            "parameters": dict(vector.values),
+            "foam_candidate_id": candidate_id,
+            "candidate_work_dir": str(candidate_case_dir),
+            "input_geometry_path": str(geometry_path),
+            "drag_proxy": float(drag_proxy),
+            "volume_delta": float(volume_delta),
+        }
 
         try:
             manifest = self.build_case(
@@ -102,11 +121,29 @@ class SimpleFoamHighFidelityGate:
                 execute=True,
             )
         except Exception:
-            return [_penalty_value(drag_proxy), volume_delta]
+            objectives = [_penalty_value(drag_proxy), volume_delta]
+            record.update(
+                {
+                    "solver_status": "exception",
+                    "objectives": list(objectives),
+                }
+            )
+            self.evaluation_records.append(record)
+            return objectives
 
         status = run_manifest.get("status", "unknown")
+        record.update(
+            {
+                "solver_status": status,
+                "solver_reason": run_manifest.get("reason"),
+                "run_manifest": run_manifest,
+            }
+        )
         if status != "executed_ok":
-            return [_penalty_value(drag_proxy), volume_delta]
+            objectives = [_penalty_value(drag_proxy), volume_delta]
+            record["objectives"] = list(objectives)
+            self.evaluation_records.append(record)
+            return objectives
 
         # Try to read real forceCoeffs drag; fall back to geometric proxy
         # when the file is missing (e.g. simpleFoam didn't run because the
@@ -118,11 +155,21 @@ class SimpleFoamHighFidelityGate:
             reference_area=self.reference_area_m2,
             fluid_density=self.fluid_density_kg_m3,
         )
+        record["force_coeffs"] = cd_report
         if cd_report is not None and cd_report.get("drag_newtons") is not None:
-            return [float(cd_report["drag_newtons"]), volume_delta]
+            objectives = [float(cd_report["drag_newtons"]), volume_delta]
+            record["objectives"] = list(objectives)
+            self.evaluation_records.append(record)
+            return objectives
         if cd_report is not None:
-            return [float(cd_report["final_cd"]), volume_delta]
-        return [drag_proxy, volume_delta]
+            objectives = [float(cd_report["final_cd"]), volume_delta]
+            record["objectives"] = list(objectives)
+            self.evaluation_records.append(record)
+            return objectives
+        objectives = [drag_proxy, volume_delta]
+        record["objectives"] = list(objectives)
+        self.evaluation_records.append(record)
+        return objectives
 
 
 def _drag_proxy(mesh: trimesh.Trimesh, region: dict) -> float:

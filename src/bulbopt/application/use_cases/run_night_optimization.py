@@ -35,6 +35,7 @@ in cost to mid gate) so unit tests run in milliseconds. The real
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Callable, List, Sequence
@@ -58,6 +59,7 @@ from bulbopt.infrastructure.adapters.simple_foam_gate import (
 from bulbopt.infrastructure.adapters.stl_sanity import validate_stl
 from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
 from bulbopt.optimization.learning.gp_surrogate import GPSurrogate, MIN_TRAIN_POINTS
+from bulbopt.optimization.learning.cfd_evidence_store import CFDEvidenceStore
 from bulbopt.optimization.learning.history_store import (
     HistoryStore,
     default_history_path,
@@ -93,6 +95,7 @@ HighFidelityEvaluator = Callable[[List[KrachtVector]], List[List[float]]]
 # 2026-04-23 mesh-quality spec §4 L4). One JSON object per line: ``{"vector":
 # [..8 floats..], "invalid": 0 | 1}``.
 VALIDITY_HISTORY_FILENAME: str = "validity_history.jsonl"
+CFD_EVIDENCE_FILENAME: str = "cfd_evidence.jsonl"
 
 
 @dataclass(slots=True)
@@ -228,8 +231,10 @@ def run_night_optimization(
         )
         baseline_cfd_result: dict | None = None
 
+        foam_gate: SimpleFoamHighFidelityGate | None = None
         if high_fidelity_evaluator is not None:
             high_eval = high_fidelity_evaluator
+            high_gate_backend = "external"
         elif openfoam_available:
             case_logger.log_stage(
                 stage="high_gate",
@@ -249,6 +254,7 @@ def run_night_optimization(
                 run_case=runner.run_case,
             )
             high_eval = foam_gate.evaluate
+            high_gate_backend = "simple_foam"
         else:
             case_logger.log_stage(
                 stage="high_gate",
@@ -256,6 +262,7 @@ def run_night_optimization(
                 extra={"backend": "surrogate", "reason": "openfoam_unavailable"},
             )
             high_eval = _default_high_evaluator(repaired_mesh, region, deformer)
+            high_gate_backend = "surrogate"
         high_gate = Gate(
             name="high",
             evaluate=high_eval,
@@ -395,6 +402,24 @@ def run_night_optimization(
         high_fidelity_payload["engineering_outcome"] = engineering_outcome
         high_fidelity_payload["rejected_candidates"] = rejected_candidates
         json_store.write(night_dir / "high_fidelity_results.json", high_fidelity_payload)
+
+        evidence_rows = _cfd_evidence_rows(
+            case_id=case.case_id,
+            case_name=case.case_name,
+            source_path=command.source_path,
+            high_fidelity_results=result.high_fidelity_results,
+            backend=high_gate_backend,
+            baseline_cfd_result=baseline_cfd_result,
+            engineering_outcome=engineering_outcome,
+            rejected_candidates=rejected_candidates,
+            foam_evaluation_records=(
+                list(foam_gate.evaluation_records) if foam_gate is not None else []
+            ),
+        )
+        CFDEvidenceStore(night_dir / CFD_EVIDENCE_FILENAME).write_all(evidence_rows)
+        CFDEvidenceStore(_cfd_evidence_history_path(project_root)).append_many(
+            evidence_rows
+        )
         case_logger.log_stage(
             stage="night_optimization_outputs",
             status="completed",
@@ -402,6 +427,7 @@ def run_night_optimization(
                 "winner": winner_id or "n/a",
                 "stl_invalid_count": len(stl_invalid_candidates),
                 "rejected_count": len(rejected_candidates),
+                "cfd_evidence_rows": len(evidence_rows),
             },
         )
 
@@ -414,11 +440,7 @@ def run_night_optimization(
                 result=result,
                 scheduler=scheduler,
                 winner_id=winner_id,
-                high_gate_backend=(
-                    "simple_foam"
-                    if openfoam_available
-                    else ("external" if high_fidelity_evaluator is not None else "surrogate")
-                ),
+                high_gate_backend=high_gate_backend,
                 stl_invalid_candidates=stl_invalid_candidates,
                 rejected_candidates=rejected_candidates,
                 engineering_summary=engineering_summary,
@@ -705,6 +727,149 @@ def _engineering_outcome(
         "winner_id": winner_id,
         "message": "Best CFD candidate improves over the baseline.",
     }
+
+
+def _cfd_evidence_history_path(project_root: Path) -> Path:
+    return Path(project_root) / ".history" / CFD_EVIDENCE_FILENAME
+
+
+def _cfd_evidence_rows(
+    *,
+    case_id: str,
+    case_name: str,
+    source_path: str,
+    high_fidelity_results: Sequence,
+    backend: str,
+    baseline_cfd_result: dict | None,
+    engineering_outcome: dict,
+    rejected_candidates: Sequence[dict],
+    foam_evaluation_records: Sequence[dict],
+) -> list[dict]:
+    """Build durable high-fidelity evidence rows for audit and ML reuse."""
+    created_at = datetime.now(timezone.utc).isoformat()
+    baseline_cd = (
+        float(baseline_cfd_result["final_cd"])
+        if baseline_cfd_result is not None
+        and baseline_cfd_result.get("final_cd") is not None
+        else None
+    )
+    valid_candidate_ids = {
+        id(candidate) for candidate in _engineering_valid_candidates(high_fidelity_results)
+    }
+    rejection_by_id = {
+        str(row.get("candidate_id")): list(row.get("reasons") or [])
+        for row in rejected_candidates
+    }
+    rows: list[dict] = []
+
+    for index, candidate in enumerate(high_fidelity_results, start=1):
+        candidate_id = f"candidate-{index:03d}"
+        vector = getattr(candidate, "vector")
+        objectives = [float(value) for value in getattr(candidate, "objectives", []) or []]
+        final_cd = float(objectives[0]) if objectives and objectives[0] < 1e8 else None
+        foam_record = (
+            dict(foam_evaluation_records[index - 1])
+            if index - 1 < len(foam_evaluation_records)
+            else None
+        )
+        rows.append(
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "created_at": created_at,
+                "case_id": case_id,
+                "case_name": case_name,
+                "source_path": str(source_path),
+                "candidate_id": candidate_id,
+                "backend": backend,
+                "parameters": dict(vector.values),
+                "objectives": objectives,
+                "final_cd": final_cd,
+                "baseline_cd": baseline_cd,
+                "improvement_percent": _candidate_improvement_percent(
+                    baseline_cd=baseline_cd,
+                    candidate_cd=final_cd,
+                ),
+                "engineering_valid": id(candidate) in valid_candidate_ids,
+                "engineering_outcome": dict(engineering_outcome),
+                "rejection_reasons": rejection_by_id.get(candidate_id, []),
+                "solver": _solver_evidence(foam_record),
+                "force_coeffs": (
+                    foam_record.get("force_coeffs")
+                    if foam_record is not None
+                    else None
+                ),
+                "artifact_paths": _artifact_paths(foam_record),
+            }
+        )
+
+    if baseline_cfd_result is not None:
+        rows.append(
+            {
+                "schema_version": 1,
+                "record_type": "baseline",
+                "created_at": created_at,
+                "case_id": case_id,
+                "case_name": case_name,
+                "source_path": str(source_path),
+                "candidate_id": "baseline",
+                "backend": str(baseline_cfd_result.get("backend", "unknown")),
+                "parameters": {},
+                "objectives": [float(baseline_cd)] if baseline_cd is not None else [],
+                "final_cd": baseline_cd,
+                "baseline_cd": baseline_cd,
+                "improvement_percent": 0.0 if baseline_cd is not None else None,
+                "engineering_valid": True,
+                "engineering_outcome": dict(engineering_outcome),
+                "rejection_reasons": [],
+                "solver": {"status": "executed_ok"},
+                "force_coeffs": dict(baseline_cfd_result),
+                "artifact_paths": {},
+            }
+        )
+    return rows
+
+
+def _candidate_improvement_percent(
+    *,
+    baseline_cd: float | None,
+    candidate_cd: float | None,
+) -> float | None:
+    if baseline_cd is None or baseline_cd <= 0 or candidate_cd is None:
+        return None
+    return float((baseline_cd - candidate_cd) / baseline_cd * 100.0)
+
+
+def _solver_evidence(foam_record: dict | None) -> dict | None:
+    if foam_record is None:
+        return None
+    run_manifest = foam_record.get("run_manifest") or {}
+    check_mesh_reports = [
+        step.get("check_mesh_report")
+        for step in run_manifest.get("executed_steps", [])
+        if step.get("check_mesh_report") is not None
+    ]
+    return {
+        "status": foam_record.get("solver_status"),
+        "reason": foam_record.get("solver_reason"),
+        "foam_candidate_id": foam_record.get("foam_candidate_id"),
+        "high_fidelity_used": run_manifest.get("high_fidelity_used"),
+        "check_mesh": check_mesh_reports[-1] if check_mesh_reports else None,
+    }
+
+
+def _artifact_paths(foam_record: dict | None) -> dict:
+    if foam_record is None:
+        return {}
+    paths: dict[str, str] = {}
+    for source_key, target_key in (
+        ("candidate_work_dir", "work_dir"),
+        ("input_geometry_path", "input_geometry"),
+    ):
+        value = foam_record.get(source_key)
+        if value is not None:
+            paths[target_key] = str(value)
+    return paths
 
 
 # --- validity classifier glue (spec 2026-04-23 §4 L4) -------------------

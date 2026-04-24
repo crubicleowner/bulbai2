@@ -31,3 +31,22 @@ def _isolate_bulbopt_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     finally:
         # monkeypatch undoes, but preserve type.
         _ = original_home
+
+
+@pytest.fixture(autouse=True)
+def _disable_real_openfoam_for_application_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Application unit tests must not launch WSL/OpenFOAM accidentally.
+
+    Tests that need to assert OpenFOAM wiring can still monkeypatch this
+    import-site function to ``True`` inside the test body.
+    """
+    monkeypatch.setenv("BULBOPT_DISABLE_WSL_OPENFOAM", "1")
+    from bulbopt.application.use_cases import run_night_optimization
+
+    monkeypatch.setattr(
+        run_night_optimization,
+        "detect_openfoam_available",
+        lambda: False,
+    )

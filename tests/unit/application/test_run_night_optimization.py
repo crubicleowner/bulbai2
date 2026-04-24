@@ -395,6 +395,74 @@ def test_run_night_optimization_writes_engineering_outcome(tmp_path: Path) -> No
     assert "message" in hf["engineering_outcome"]
 
 
+def test_run_night_optimization_writes_cfd_evidence_jsonl(tmp_path: Path) -> None:
+    """Every high-fidelity evaluation must become durable evidence for
+    audit, warm-start filtering, and future surrogate training."""
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    project_root = tmp_path / "projects"
+
+    def external_high(vectors: list[KrachtVector]) -> list[list[float]]:
+        return [[0.321, 0.012] for _ in vectors]
+
+    summary = run_night_optimization(
+        project_root=project_root,
+        command=CreateCaseCommand(
+            case_name="night-evidence",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=2,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+            seed=29,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+        ),
+        high_fidelity_evaluator=external_high,
+    )
+
+    case_dir = project_root / summary.case_id
+    case_evidence_path = (
+        case_dir / "working" / "night_optimization" / "cfd_evidence.jsonl"
+    )
+    project_evidence_path = project_root / ".history" / "cfd_evidence.jsonl"
+
+    assert case_evidence_path.exists()
+    assert project_evidence_path.exists()
+    case_rows = [
+        json.loads(line)
+        for line in case_evidence_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    project_rows = [
+        json.loads(line)
+        for line in project_evidence_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert case_rows == project_rows
+    assert len(case_rows) == 1
+    row = case_rows[0]
+    assert row["schema_version"] == 1
+    assert row["record_type"] == "candidate"
+    assert row["case_id"] == summary.case_id
+    assert row["candidate_id"] == "candidate-001"
+    assert row["backend"] == "external"
+    assert row["final_cd"] == pytest.approx(0.321)
+    assert row["baseline_cd"] is None
+    assert row["engineering_valid"] is True
+    assert row["engineering_outcome"]["status"] == "unverified_winner"
+    assert set(row["parameters"]) >= {"length_ratio", "nose_sharpness"}
+    assert row["objectives"] == [0.321, 0.012]
+
+
 def test_run_night_optimization_quarantines_rejected_high_fidelity_candidates(
     tmp_path: Path,
 ) -> None:
