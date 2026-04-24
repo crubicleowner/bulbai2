@@ -135,6 +135,26 @@ class CFDEvidenceStore:
                 summary[reason] += 1
         return summary
 
+    def best_candidate_rows(
+        self,
+        n: int,
+        *,
+        hull_fingerprint: str | None = None,
+        settings_hash: str | None = None,
+    ) -> list[dict]:
+        """Return compatible, improving candidate evidence rows by lowest Cd."""
+        rows: list[dict] = []
+        for row in self.load_all():
+            if self._warm_start_rejection_reason(
+                row,
+                hull_fingerprint=hull_fingerprint,
+                settings_hash=settings_hash,
+            ):
+                continue
+            rows.append(dict(row))
+        rows.sort(key=lambda row: float(row["final_cd"]))
+        return rows[: int(max(n, 0))]
+
     def _warm_start_rejection_reason(
         self,
         row: dict,

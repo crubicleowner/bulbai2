@@ -12,6 +12,8 @@ import pytest
 import trimesh
 
 from bulbopt.app.main import run_cli
+from bulbopt.application.use_cases import run_night_optimization as run_night_module
+from bulbopt.optimization.learning.cfd_evidence_store import CFDEvidenceStore
 
 
 def _write_valid_stl(path: Path) -> None:
@@ -159,6 +161,76 @@ def test_run_cli_night_run_command_writes_pareto_artifacts(
     case_dir = cases[0]
     pareto = case_dir / "working" / "night_optimization" / "pareto_front.json"
     assert pareto.exists()
+
+
+def test_run_cli_evidence_command_lists_compatible_cfd_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+    project_root = tmp_path / "projects"
+    hull_fingerprint = run_night_module._file_sha256(source_path)
+    settings_hash = run_night_module._solver_settings_hash(backend="external")
+    parameters = {
+        "length_ratio": 0.031,
+        "breadth_ratio": 0.085,
+        "height_ratio": 0.30,
+        "axis_z_ratio": 0.20,
+        "longitudinal_pos": 0.60,
+        "cross_section_c": 0.74,
+        "volume_coef": 0.64,
+        "nose_sharpness": 0.50,
+    }
+    CFDEvidenceStore(project_root / ".history" / "cfd_evidence.jsonl").append_many(
+        [
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": "candidate-good",
+                "case_id": "case-good",
+                "parameters": parameters,
+                "final_cd": 0.32,
+                "baseline_cd": 0.40,
+                "improvement_percent": 20.0,
+                "engineering_valid": True,
+                "hull_fingerprint": hull_fingerprint,
+                "settings_hash": settings_hash,
+            },
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": "candidate-other-hull",
+                "case_id": "case-other",
+                "parameters": dict(parameters, length_ratio=0.043),
+                "final_cd": 0.30,
+                "baseline_cd": 0.40,
+                "improvement_percent": 25.0,
+                "engineering_valid": True,
+                "hull_fingerprint": "other-hull",
+                "settings_hash": settings_hash,
+            },
+        ]
+    )
+
+    exit_code = run_cli(
+        [
+            "evidence",
+            "--project", str(project_root),
+            "--source", str(source_path),
+            "--backend", "external",
+            "--limit", "5",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "eligible=1" in captured.out
+    assert "hull_mismatch=1" in captured.out
+    assert "candidate-good" in captured.out
+    assert "case-good" in captured.out
+    assert "Cd=0.320000" in captured.out
+    assert "improvement=20.00%" in captured.out
+    assert "candidate-other-hull" not in captured.out
 
 
 def test_run_cli_without_arguments_shows_usage_and_returns_nonzero(

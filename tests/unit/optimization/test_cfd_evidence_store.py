@@ -91,3 +91,24 @@ def test_cfd_evidence_store_filters_surrogate_training_by_compatibility(
     vector, cd = pairs[0]
     assert vector.values["length_ratio"] == pytest.approx(0.031)
     assert cd == pytest.approx(0.34)
+
+
+def test_cfd_evidence_store_lists_best_compatible_rows_by_cd(
+    tmp_path: Path,
+) -> None:
+    store = CFDEvidenceStore(tmp_path / "cfd_evidence.jsonl")
+    store.append_many(
+        [
+            _row(candidate_id="slower", final_cd=0.36),
+            _row(candidate_id="best", final_cd=0.31),
+            _row(candidate_id="wrong-hull", hull_fingerprint="hull-b", final_cd=0.20),
+        ]
+    )
+
+    rows = store.best_candidate_rows(
+        1,
+        hull_fingerprint="hull-a",
+        settings_hash="settings-a",
+    )
+
+    assert [row["candidate_id"] for row in rows] == ["best"]

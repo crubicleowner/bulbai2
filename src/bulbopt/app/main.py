@@ -77,6 +77,19 @@ def run_cli(argv: list[str]) -> int:
     night_parser.add_argument("--high-fidelity-budget", type=int, default=10)
     night_parser.add_argument("--seed", type=int, default=None)
 
+    evidence_parser = subparsers.add_parser(
+        "evidence",
+        help="List best compatible historical CFD evidence rows",
+    )
+    evidence_parser.add_argument("--project", required=True)
+    evidence_parser.add_argument("--source", required=True, help="Source STL path")
+    evidence_parser.add_argument(
+        "--backend",
+        choices=["surrogate", "external", "simple_foam"],
+        default="surrogate",
+    )
+    evidence_parser.add_argument("--limit", type=int, default=10)
+
     if not argv:
         parser.print_help(sys.stderr)
         return 2
@@ -184,6 +197,60 @@ def run_cli(argv: list[str]) -> int:
             f"{summary.status}: case_id={summary.case_id} "
             f"winner={summary.best_candidate_id or 'n/a'}"
         )
+        return 0
+
+    if namespace.command == "evidence":
+        from bulbopt.application.use_cases.run_night_optimization import (
+            _file_sha256,
+            _solver_settings_hash,
+        )
+        from bulbopt.optimization.learning.cfd_evidence_store import CFDEvidenceStore
+
+        project_root = Path(namespace.project)
+        source_path = Path(namespace.source)
+        evidence_store = CFDEvidenceStore(
+            project_root / ".history" / "cfd_evidence.jsonl"
+        )
+        hull_fingerprint = _file_sha256(source_path)
+        settings_hash = _solver_settings_hash(backend=str(namespace.backend))
+        summary = evidence_store.warm_start_eligibility_summary(
+            hull_fingerprint=hull_fingerprint,
+            settings_hash=settings_hash,
+        )
+        print(
+            "Evidence eligibility: "
+            f"candidate_rows={summary['candidate_rows']} "
+            f"eligible={summary['eligible']} "
+            f"hull_mismatch={summary['hull_mismatch']} "
+            f"settings_mismatch={summary['settings_mismatch']} "
+            f"not_engineering_valid={summary['not_engineering_valid']} "
+            f"not_improving={summary['not_improving']}"
+        )
+        rows = evidence_store.best_candidate_rows(
+            int(namespace.limit),
+            hull_fingerprint=hull_fingerprint,
+            settings_hash=settings_hash,
+        )
+        if not rows:
+            print("No compatible CFD evidence found")
+            return 0
+        for index, row in enumerate(rows, start=1):
+            baseline = row.get("baseline_cd")
+            baseline_text = (
+                f" baseline={float(baseline):.6f}" if baseline is not None else ""
+            )
+            improvement = row.get("improvement_percent")
+            improvement_text = (
+                f" improvement={float(improvement):.2f}%"
+                if improvement is not None
+                else ""
+            )
+            print(
+                f"{index}. {row.get('case_id', 'n/a')} "
+                f"{row.get('candidate_id', 'n/a')} "
+                f"Cd={float(row['final_cd']):.6f}"
+                f"{baseline_text}{improvement_text}"
+            )
         return 0
 
     parser.print_help(sys.stderr)
