@@ -47,6 +47,22 @@ def test_parser_reads_last_drag_coefficient(tmp_path: Path) -> None:
     assert result["final_time"] == pytest.approx(10.0)
 
 
+def test_parser_reads_openfoam13_force_coeffs_dat_cd_column(tmp_path: Path) -> None:
+    dat = tmp_path / "forceCoeffs.dat"
+    dat.write_text(
+        "# Force coefficients\n"
+        "# Time Cm Cd Cl Cl(f) Cl(r)\n"
+        "0 0.001 0.410000 0.0 0.0 0.0\n"
+        "200 0.002 0.324057128630 0.0 0.0 0.0\n",
+        encoding="utf-8",
+    )
+
+    result = parse_drag_coefficient_dat(dat)
+
+    assert result["final_cd"] == pytest.approx(0.324057128630)
+    assert result["source_format"] == "openfoam13_forceCoeffs"
+
+
 def test_parser_ignores_comments_and_blank_lines(tmp_path: Path) -> None:
     dat = tmp_path / "coefficient.dat"
     dat.write_text(

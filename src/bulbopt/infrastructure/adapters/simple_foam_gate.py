@@ -38,7 +38,7 @@ from bulbopt.infrastructure.adapters.force_coeffs_parser import (
     parse_drag_coefficient_dat,
 )
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
-from bulbopt.optimization.parametric.kracht_space import KrachtVector
+from bulbopt.optimization.parametric.kracht_space import KrachtDesignSpace, KrachtVector
 
 
 BuildCaseFn = Callable[..., dict]
@@ -60,9 +60,11 @@ class SimpleFoamHighFidelityGate:
     reference_area_m2: float | None = None
     fluid_density_kg_m3: float | None = None
     _baseline_volume: float = field(init=False, default=0.0)
+    _design_space: KrachtDesignSpace = field(init=False)
 
     def __post_init__(self) -> None:
         self._baseline_volume = _mesh_volume(self.baseline_mesh)
+        self._design_space = KrachtDesignSpace()
         Path(self.work_root).mkdir(parents=True, exist_ok=True)
 
     def evaluate(self, vectors: Sequence[KrachtVector]) -> List[List[float]]:
@@ -73,6 +75,9 @@ class SimpleFoamHighFidelityGate:
         return objectives
 
     def _evaluate_one(self, vector: KrachtVector) -> List[float]:
+        if self._design_space.constraint_violations(vector):
+            return [1e9, 1e9]
+
         deformed = self.deformer.deform(self.baseline_mesh, self.region, vector)
         candidate_id = f"candidate-{uuid.uuid4().hex[:8]}"
         candidate_case_dir = Path(self.work_root) / candidate_id
@@ -181,7 +186,14 @@ def _read_force_coeffs(
     if not subdirs:
         return None
     latest = max(subdirs, key=lambda p: p.stat().st_mtime)
-    dat_path = latest / "coefficient.dat"
+    dat_path = next(
+        (
+            latest / filename
+            for filename in ("forceCoeffs.dat", "coefficient.dat")
+            if (latest / filename).exists()
+        ),
+        latest / "coefficient.dat",
+    )
     try:
         return parse_drag_coefficient_dat(
             dat_path,

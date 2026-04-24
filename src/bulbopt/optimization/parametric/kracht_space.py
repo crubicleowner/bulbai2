@@ -43,7 +43,7 @@ _DEFAULT_BOUNDS: Dict[str, Tuple[float, float]] = {
     "longitudinal_pos": (0.000, 1.000),
     "cross_section_c":  (0.250, 1.000),
     "volume_coef":      (0.400, 0.900),
-    "nose_sharpness":   (0.000, 1.000),
+    "nose_sharpness":   (0.050, 1.000),
 }
 
 
@@ -87,15 +87,46 @@ class KrachtDesignSpace:
 
     def validate(self, vector: KrachtVector) -> bool:
         """Return True iff ``vector`` has every declared parameter in range."""
+        return not self.constraint_violations(vector)
+
+    def constraint_violations(self, vector: KrachtVector) -> List[str]:
+        """Return machine-readable engineering constraint violations.
+
+        Bounds are the first line of defence; coupled checks catch
+        parameter combinations that are individually legal but prone to
+        folded or unmanufacturable bulb geometry.
+        """
         values = vector.values
+        violations: List[str] = []
         for name in KRACHT_PARAMETER_NAMES:
             if name not in values:
-                return False
+                violations.append(f"{name}_missing")
+                continue
             lo, hi = self.bounds[name]
             value = float(values[name])
             if value < lo or value > hi:
-                return False
-        return True
+                if name == "nose_sharpness" and value < lo:
+                    violations.append("nose_sharpness_below_min")
+                else:
+                    violations.append(f"{name}_out_of_bounds")
+
+        if violations:
+            return violations
+
+        nose = float(values["nose_sharpness"])
+        cross_section = float(values["cross_section_c"])
+        longitudinal_pos = float(values["longitudinal_pos"])
+        height_ratio = float(values["height_ratio"])
+        volume_coef = float(values["volume_coef"])
+
+        if cross_section > 0.98 and nose < 0.08:
+            violations.append("full_section_with_sharp_nose")
+        if longitudinal_pos > 0.85 and height_ratio > 0.55:
+            violations.append("aft_high_bulb_geometry_risk")
+        if volume_coef > 0.88 and nose < 0.07:
+            violations.append("high_volume_with_sharp_nose")
+
+        return violations
 
     def to_array(self, vector: KrachtVector) -> List[float]:
         """Convert a vector to a list of floats in declared order."""

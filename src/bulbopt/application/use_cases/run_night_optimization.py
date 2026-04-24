@@ -50,7 +50,10 @@ from bulbopt.infrastructure.adapters.openfoam_adapter import (
     detect_openfoam_available,
 )
 from bulbopt.infrastructure.adapters.openfoam_runner import OpenFOAMRunnerAdapter
-from bulbopt.infrastructure.adapters.simple_foam_gate import SimpleFoamHighFidelityGate
+from bulbopt.infrastructure.adapters.simple_foam_gate import (
+    SimpleFoamHighFidelityGate,
+    _read_force_coeffs,
+)
 from bulbopt.infrastructure.adapters.stl_sanity import validate_stl
 from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
 from bulbopt.optimization.learning.gp_surrogate import GPSurrogate, MIN_TRAIN_POINTS
@@ -211,9 +214,14 @@ def run_night_optimization(
             evaluate=mid_evaluator,
             estimated_seconds_per_eval=config.mid_gate_estimated_seconds_per_eval,
         )
+        openfoam_available = (
+            high_fidelity_evaluator is None and detect_openfoam_available()
+        )
+        baseline_cfd_result: dict | None = None
+
         if high_fidelity_evaluator is not None:
             high_eval = high_fidelity_evaluator
-        elif detect_openfoam_available():
+        elif openfoam_available:
             case_logger.log_stage(
                 stage="high_gate",
                 status="initialised",
@@ -223,6 +231,21 @@ def run_night_optimization(
             foam_work_root.mkdir(parents=True, exist_ok=True)
             builder = OpenFOAMAdapter()
             runner = OpenFOAMRunnerAdapter()
+            baseline_cfd_result = _run_baseline_simple_foam(
+                baseline_work_dir=case_dir
+                / "working"
+                / "night_optimization"
+                / "baseline_cfd",
+                geometry_path=case_dir / "working" / "repaired" / "repaired.stl",
+                build_case=builder.build_case,
+                run_case=runner.run_case,
+            )
+            if baseline_cfd_result is not None:
+                case_logger.log_stage(
+                    stage="baseline_cfd",
+                    status="completed",
+                    extra={"final_cd": baseline_cfd_result.get("final_cd")},
+                )
             foam_gate = SimpleFoamHighFidelityGate(
                 work_root=foam_work_root,
                 baseline_mesh=repaired_mesh,
@@ -294,17 +317,30 @@ def run_night_optimization(
                 ],
             },
         )
+        high_fidelity_rows = [
+            {
+                "vector": [r.vector.values[name] for name in KRACHT_PARAMETER_NAMES],
+                "parameters": dict(r.vector.values),
+                "objectives": list(r.objectives),
+            }
+            for r in result.high_fidelity_results
+        ]
+        baseline_cd = (
+            float(baseline_cfd_result["final_cd"])
+            if baseline_cfd_result is not None
+            and baseline_cfd_result.get("final_cd") is not None
+            else None
+        )
+        engineering_summary = _baseline_improvement_summary(
+            baseline_cd=baseline_cd,
+            high_fidelity_rows=high_fidelity_rows,
+        )
         json_store.write(
             night_dir / "high_fidelity_results.json",
             {
-                "results": [
-                    {
-                        "vector": [r.vector.values[name] for name in KRACHT_PARAMETER_NAMES],
-                        "parameters": dict(r.vector.values),
-                        "objectives": list(r.objectives),
-                    }
-                    for r in result.high_fidelity_results
-                ],
+                "baseline_cfd": baseline_cfd_result,
+                "engineering_summary": engineering_summary,
+                "results": high_fidelity_rows,
             },
         )
         json_store.write(
@@ -346,10 +382,11 @@ def run_night_optimization(
                 winner_id=winner_id,
                 high_gate_backend=(
                     "simple_foam"
-                    if high_fidelity_evaluator is None and detect_openfoam_available()
+                    if openfoam_available
                     else ("external" if high_fidelity_evaluator is not None else "surrogate")
                 ),
                 stl_invalid_candidates=stl_invalid_candidates,
+                engineering_summary=engineering_summary,
             )
             case_logger.log_stage(
                 stage="build_night_report",
@@ -376,6 +413,7 @@ def run_night_optimization(
                 "budget_exhausted": result.budget_exhausted,
                 "winner_id": winner_id,
                 "gate_timings": scheduler.gate_timings(),
+                "engineering_summary": engineering_summary,
             }
         }
         repository.save_case(case)
@@ -415,10 +453,14 @@ def _mid_gate_evaluator(
     + mesh quality (L2). All three objectives minimised."""
 
     baseline_volume = _mesh_volume(baseline_mesh)
+    design_space = KrachtDesignSpace()
 
     def evaluate(vectors: Sequence[KrachtVector]) -> List[List[float]]:
         objectives: List[List[float]] = []
         for vector in vectors:
+            if design_space.constraint_violations(vector):
+                objectives.append([1e9, 1e9, 1e9])
+                continue
             deformed = deformer.deform(baseline_mesh, region, vector)
             extents = deformed.extents.astype(float)
             primary = int(region.get("axis_index", int(extents.argmax())))
@@ -450,6 +492,78 @@ def _default_high_evaluator(
     """Placeholder high-fidelity gate: same proxy as mid for fast tests.
     Task 6 replaces this with a simpleFoam runner."""
     return _mid_gate_evaluator(baseline_mesh, region, deformer)
+
+
+def _run_baseline_simple_foam(
+    *,
+    baseline_work_dir: Path,
+    geometry_path: Path,
+    build_case: Callable[..., dict],
+    run_case: Callable[..., dict],
+) -> dict | None:
+    """Run the undeformed baseline through the same OpenFOAM adapter.
+
+    Returns the parsed final Cd report, or ``None`` when the solver did
+    not complete or force coefficients were unavailable.
+    """
+    try:
+        manifest = build_case(
+            baseline_work_dir,
+            best_candidate_id="baseline",
+            best_candidate_geometry_path=geometry_path,
+        )
+        foam_case_dir = baseline_work_dir / "working" / "openfoam_case"
+        run_manifest = run_case(
+            foam_case_dir,
+            case_manifest=manifest,
+            execute=True,
+        )
+    except Exception:
+        return None
+
+    if run_manifest.get("status") != "executed_ok":
+        return None
+
+    report = _read_force_coeffs(
+        foam_case_dir,
+        reference_velocity=None,
+        reference_area=None,
+        fluid_density=None,
+    )
+    if report is None:
+        return None
+    report["backend"] = "simple_foam"
+    return report
+
+
+def _baseline_improvement_summary(
+    *,
+    baseline_cd: float | None,
+    high_fidelity_rows: Sequence[dict],
+) -> dict | None:
+    """Compare the best high-fidelity Cd against the baseline Cd."""
+    if baseline_cd is None or baseline_cd <= 0:
+        return None
+
+    winner_cd: float | None = None
+    for row in high_fidelity_rows:
+        objectives = row.get("objectives") or []
+        if not objectives:
+            continue
+        cd = float(objectives[0])
+        if cd >= 1e8:
+            continue
+        winner_cd = cd if winner_cd is None else min(winner_cd, cd)
+
+    if winner_cd is None:
+        return None
+
+    improvement = (float(baseline_cd) - winner_cd) / float(baseline_cd) * 100.0
+    return {
+        "baseline_cd": float(baseline_cd),
+        "winner_cd": float(winner_cd),
+        "improvement_percent": float(improvement),
+    }
 
 
 # --- validity classifier glue (spec 2026-04-23 §4 L4) -------------------
@@ -752,6 +866,7 @@ def _render_night_report(
     winner_id: str | None,
     high_gate_backend: str,
     stl_invalid_candidates: List[dict] | None = None,
+    engineering_summary: dict | None = None,
 ) -> Path:
     template_root = Path(__file__).resolve().parents[2] / "reporting" / "templates"
     report = HtmlReportAdapter(template_root=template_root)
@@ -800,6 +915,7 @@ def _render_night_report(
         "high_gate_backend": high_gate_backend,
         "parameter_names": list(KRACHT_PARAMETER_NAMES),
         "stl_invalid_candidates": list(stl_invalid_candidates or []),
+        "engineering_summary": engineering_summary,
     }
 
     # The HtmlReportAdapter writes report.html via a hard-coded template

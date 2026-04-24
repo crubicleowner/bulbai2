@@ -63,6 +63,15 @@
       <tr><th>High-fidelity backend</th><td>{{ high_gate_backend }}</td></tr>
     </table>
 
+    {% if engineering_summary %}
+    <h2>Baseline comparison</h2>
+    <table class="narrow">
+      <tr><th>Baseline Cd</th><td>{{ "%.6f"|format(engineering_summary.baseline_cd) }}</td></tr>
+      <tr><th>Best candidate Cd</th><td>{{ "%.6f"|format(engineering_summary.winner_cd) }}</td></tr>
+      <tr><th>Improvement vs baseline</th><td>{{ "%.2f"|format(engineering_summary.improvement_percent) }}%</td></tr>
+    </table>
+    {% endif %}
+
     <h2>Gate timings</h2>
     <table>
       <thead><tr><th>Gate</th><th>Seconds</th></tr></thead>

@@ -48,18 +48,24 @@ def parse_drag_coefficient_dat(
     if not path.exists():
         raise ForceCoeffsNotFoundError(str(path))
 
+    source_format = "legacy_coefficient"
+    cd_index = 1
     rows: list[tuple[float, float]] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
+                header = stripped.lower()
+                if "time" in header and "cm" in header and "cd" in header:
+                    source_format = "openfoam13_forceCoeffs"
+                    cd_index = 2
                 continue
             parts = stripped.split()
-            if len(parts) < 2:
+            if len(parts) <= cd_index:
                 continue
             try:
                 time_s = float(parts[0])
-                cd = float(parts[1])
+                cd = float(parts[cd_index])
             except ValueError:
                 continue
             rows.append((time_s, cd))
@@ -74,6 +80,7 @@ def parse_drag_coefficient_dat(
         "final_cd": final_cd,
         "iterations": len(rows),
         "final_time": final_time,
+        "source_format": source_format,
     }
 
     if (

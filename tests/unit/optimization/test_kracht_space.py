@@ -33,7 +33,7 @@ def test_kracht_design_space_bounds_match_spec_ranges() -> None:
         "longitudinal_pos": (0.000, 1.000),
         "cross_section_c":  (0.250, 1.000),
         "volume_coef":      (0.400, 0.900),
-        "nose_sharpness":   (0.000, 1.000),
+        "nose_sharpness":   (0.050, 1.000),
     }
     for name, (lo, hi) in expected.items():
         lo_got, hi_got = space.bounds[name]
@@ -100,6 +100,44 @@ def test_kracht_design_space_validate_rejects_out_of_bounds() -> None:
         }
     )
     assert space.validate(vector) is False
+
+
+def test_kracht_design_space_rejects_near_zero_nose_sharpness() -> None:
+    space = KrachtDesignSpace()
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.02,
+            "breadth_ratio":    0.08,
+            "height_ratio":     0.30,
+            "axis_z_ratio":     0.20,
+            "longitudinal_pos": 0.60,
+            "cross_section_c":  0.75,
+            "volume_coef":      0.65,
+            "nose_sharpness":   0.0063,
+        }
+    )
+
+    assert space.validate(vector) is False
+    assert "nose_sharpness_below_min" in space.constraint_violations(vector)
+
+
+def test_kracht_design_space_rejects_full_section_with_too_sharp_nose() -> None:
+    space = KrachtDesignSpace()
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.044,
+            "breadth_ratio":    0.016,
+            "height_ratio":     0.54,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.75,
+            "cross_section_c":  0.999,
+            "volume_coef":      0.89,
+            "nose_sharpness":   0.055,
+        }
+    )
+
+    assert space.validate(vector) is False
+    assert "full_section_with_sharp_nose" in space.constraint_violations(vector)
 
 
 def test_kracht_design_space_validate_rejects_missing_parameter() -> None:

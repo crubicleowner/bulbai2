@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import trimesh
+import pytest
+
+from bulbopt.application.use_cases.run_night_optimization import (
+    _baseline_improvement_summary,
+    _mid_gate_evaluator,
+    _run_baseline_simple_foam,
+)
+from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
+from bulbopt.optimization.parametric.kracht_space import KrachtVector
+
+
+def test_mid_gate_penalizes_coupled_geometry_constraint_violation() -> None:
+    mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
+    evaluator = _mid_gate_evaluator(
+        mesh,
+        {"axis_index": 0, "axis_min": 0.0, "axis_max": 2.0},
+        BulbFFDDeformer(),
+    )
+    risky_vector = KrachtVector(
+        values={
+            "length_ratio": 0.044,
+            "breadth_ratio": 0.016,
+            "height_ratio": 0.54,
+            "axis_z_ratio": 0.25,
+            "longitudinal_pos": 0.75,
+            "cross_section_c": 0.999,
+            "volume_coef": 0.89,
+            "nose_sharpness": 0.055,
+        }
+    )
+
+    row = evaluator([risky_vector])[0]
+
+    assert row == [1e9, 1e9, 1e9]
+
+
+def test_baseline_improvement_summary_reports_percent_gain() -> None:
+    summary = _baseline_improvement_summary(
+        baseline_cd=0.395914172090,
+        high_fidelity_rows=[
+            {"objectives": [0.351003371340, 0.0]},
+            {"objectives": [0.324057128630, 0.0]},
+        ],
+    )
+
+    assert summary["baseline_cd"] == 0.395914172090
+    assert summary["winner_cd"] == 0.324057128630
+    assert summary["improvement_percent"] == pytest.approx(18.1496517)
+
+
+def test_run_baseline_simple_foam_parses_openfoam13_cd(tmp_path) -> None:
+    stl_path = tmp_path / "baseline.stl"
+    stl_path.write_bytes(
+        trimesh.exchange.stl.export_stl(trimesh.creation.box(extents=(4.0, 1.5, 1.0)))
+    )
+
+    def build_case(case_dir, *, best_candidate_id, best_candidate_geometry_path):
+        return {"case_dir": str(case_dir)}
+
+    def run_case(foam_case_dir, *, case_manifest=None, execute=False):
+        post_dir = foam_case_dir / "postProcessing" / "forceCoeffs" / "0"
+        post_dir.mkdir(parents=True)
+        (post_dir / "forceCoeffs.dat").write_text(
+            "# Time Cm Cd Cl Cl(f) Cl(r)\n"
+            "200 0.0 0.395914172090 0 0 0\n",
+            encoding="utf-8",
+        )
+        return {"status": "executed_ok"}
+
+    result = _run_baseline_simple_foam(
+        baseline_work_dir=tmp_path / "baseline_cfd",
+        geometry_path=stl_path,
+        build_case=build_case,
+        run_case=run_case,
+    )
+
+    assert result is not None
+    assert result["final_cd"] == pytest.approx(0.395914172090)
