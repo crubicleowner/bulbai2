@@ -178,3 +178,34 @@ def test_cascade_records_gate_timings_in_scheduler() -> None:
     assert "high" in gate_timings
     assert gate_timings["mid"] > 0.0
     assert gate_timings["high"] > 0.0
+
+
+def test_cascade_skips_penalty_candidates_before_high_fidelity() -> None:
+    """Penalty-only Pareto candidates should not consume high-fidelity budget."""
+    high_calls: list[KrachtVector] = []
+
+    def penalty_mid(vectors: list[KrachtVector]) -> list[list[float]]:
+        return [[1e9, 1e9, 1e9] for _ in vectors]
+
+    def high_evaluate(vectors: list[KrachtVector]) -> list[list[float]]:
+        high_calls.extend(vectors)
+        return [[0.0, 0.0, 0.0] for _ in vectors]
+
+    scheduler = BudgetScheduler(runtime_budget_hours=1.0, clock=lambda: 0.0)
+    strategy = CascadeStrategy(
+        space=KrachtDesignSpace(),
+        scheduler=scheduler,
+        population=6,
+        generations=2,
+        high_fidelity_budget=3,
+        mid_gate=Gate(name="mid", evaluate=penalty_mid, estimated_seconds_per_eval=0.01),
+        high_gate=Gate(name="high", evaluate=high_evaluate, estimated_seconds_per_eval=10.0),
+        seed=11,
+        n_objectives=3,
+    )
+
+    result = strategy.run()
+
+    assert result.high_fidelity_results == []
+    assert high_calls == []
+    assert "high" not in scheduler.gate_timings()

@@ -150,7 +150,12 @@ class CascadeStrategy:
         # objectives trade off perfectly, crowding picks the extremes —
         # that's fine for a first pass.
         ranked: List[ParetoCandidate] = sorted(
-            pareto_front.candidates, key=lambda c: c.objectives[0]
+            (
+                c
+                for c in pareto_front.candidates
+                if c.objectives and float(c.objectives[0]) < 1e8
+            ),
+            key=lambda c: c.objectives[0],
         )
         top = ranked[: self._high_fidelity_budget]
         if not top:
