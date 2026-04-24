@@ -21,6 +21,12 @@
     <h1>BulbOpt Night Run</h1>
     <p><strong>Case:</strong> {{ case_name }} &mdash; <strong>Status:</strong> {{ status }}</p>
     <p><strong>Winner:</strong> {{ winner_id or "n/a" }}</p>
+    {% if engineering_outcome %}
+    <p class="{{ 'ok' if engineering_outcome.status == 'engineering_winner' else 'warn' }}" style="padding: 6px 8px;">
+      <strong>Engineering outcome:</strong> {{ engineering_outcome.status }}
+      &mdash; {{ engineering_outcome.message }}
+    </p>
+    {% endif %}
 
     {% if stl_invalid_candidates %}
     <h2 class="warn" style="padding: 6px 8px;">STL sanity-check warnings ({{ stl_invalid_candidates|length }})</h2>

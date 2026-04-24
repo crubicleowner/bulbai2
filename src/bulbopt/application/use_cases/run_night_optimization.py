@@ -374,6 +374,13 @@ def run_night_optimization(
             winner_id=winner_id,
             engineering_summary=engineering_summary,
         )
+        engineering_outcome = _engineering_outcome(
+            winner_id=winner_id,
+            engineering_summary=engineering_summary,
+        )
+        high_fidelity_payload = json_store.read(night_dir / "high_fidelity_results.json")
+        high_fidelity_payload["engineering_outcome"] = engineering_outcome
+        json_store.write(night_dir / "high_fidelity_results.json", high_fidelity_payload)
         case_logger.log_stage(
             stage="night_optimization_outputs",
             status="completed",
@@ -399,6 +406,7 @@ def run_night_optimization(
                 ),
                 stl_invalid_candidates=stl_invalid_candidates,
                 engineering_summary=engineering_summary,
+                engineering_outcome=engineering_outcome,
             )
             case_logger.log_stage(
                 stage="build_night_report",
@@ -426,6 +434,7 @@ def run_night_optimization(
                 "winner_id": winner_id,
                 "gate_timings": scheduler.gate_timings(),
                 "engineering_summary": engineering_summary,
+                "engineering_outcome": engineering_outcome,
             }
         }
         repository.save_case(case)
@@ -616,6 +625,42 @@ def _winner_after_baseline_check(
     if improvement <= 0.0:
         return None
     return winner_id
+
+
+def _engineering_outcome(
+    *,
+    winner_id: str | None,
+    engineering_summary: dict | None,
+) -> dict:
+    """Return machine-readable engineering decision status."""
+    if engineering_summary is None:
+        if winner_id is None:
+            return {
+                "status": "no_engineering_winner",
+                "reason": "no_valid_candidate",
+                "message": "No valid high-fidelity candidate is available.",
+            }
+        return {
+            "status": "unverified_winner",
+            "reason": "baseline_unavailable",
+            "winner_id": winner_id,
+            "message": "Candidate exists, but no baseline CFD comparison is available.",
+        }
+
+    improvement = float(engineering_summary.get("improvement_percent", 0.0))
+    if winner_id is None or improvement <= 0.0:
+        return {
+            "status": "no_engineering_winner",
+            "reason": "candidate_worse_than_baseline",
+            "message": "Best CFD candidate is worse than the baseline.",
+        }
+
+    return {
+        "status": "engineering_winner",
+        "reason": "improves_baseline",
+        "winner_id": winner_id,
+        "message": "Best CFD candidate improves over the baseline.",
+    }
 
 
 # --- validity classifier glue (spec 2026-04-23 §4 L4) -------------------
@@ -922,6 +967,7 @@ def _render_night_report(
     high_gate_backend: str,
     stl_invalid_candidates: List[dict] | None = None,
     engineering_summary: dict | None = None,
+    engineering_outcome: dict | None = None,
 ) -> Path:
     template_root = Path(__file__).resolve().parents[2] / "reporting" / "templates"
     report = HtmlReportAdapter(template_root=template_root)
@@ -971,6 +1017,7 @@ def _render_night_report(
         "parameter_names": list(KRACHT_PARAMETER_NAMES),
         "stl_invalid_candidates": list(stl_invalid_candidates or []),
         "engineering_summary": engineering_summary,
+        "engineering_outcome": engineering_outcome,
     }
 
     # The HtmlReportAdapter writes report.html via a hard-coded template

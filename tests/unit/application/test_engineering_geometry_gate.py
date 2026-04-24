@@ -5,6 +5,7 @@ import pytest
 
 from bulbopt.application.use_cases.run_night_optimization import (
     _baseline_improvement_summary,
+    _engineering_outcome,
     _engineering_valid_candidates,
     _winner_after_baseline_check,
     _mid_gate_evaluator,
@@ -149,3 +150,49 @@ def test_winner_after_baseline_check_keeps_candidate_better_than_baseline() -> N
         )
         == "candidate-001"
     )
+
+
+def test_engineering_outcome_marks_candidate_worse_than_baseline() -> None:
+    outcome = _engineering_outcome(
+        winner_id=None,
+        engineering_summary={
+            "baseline_cd": 0.39591417209,
+            "winner_cd": 0.69755889307,
+            "improvement_percent": -76.1894224,
+        },
+    )
+
+    assert outcome == {
+        "status": "no_engineering_winner",
+        "reason": "candidate_worse_than_baseline",
+        "message": "Best CFD candidate is worse than the baseline.",
+    }
+
+
+def test_engineering_outcome_marks_candidate_that_improves_baseline() -> None:
+    outcome = _engineering_outcome(
+        winner_id="candidate-001",
+        engineering_summary={
+            "baseline_cd": 0.39591417209,
+            "winner_cd": 0.32405712863,
+            "improvement_percent": 18.1496517,
+        },
+    )
+
+    assert outcome["status"] == "engineering_winner"
+    assert outcome["reason"] == "improves_baseline"
+    assert outcome["winner_id"] == "candidate-001"
+
+
+def test_engineering_outcome_marks_missing_baseline_as_unverified() -> None:
+    outcome = _engineering_outcome(
+        winner_id="candidate-001",
+        engineering_summary=None,
+    )
+
+    assert outcome == {
+        "status": "unverified_winner",
+        "reason": "baseline_unavailable",
+        "winner_id": "candidate-001",
+        "message": "Candidate exists, but no baseline CFD comparison is available.",
+    }

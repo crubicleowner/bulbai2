@@ -351,6 +351,50 @@ def test_run_night_optimization_writes_history_jsonl(tmp_path: Path) -> None:
         assert "length_ratio" in row["parameters"]
 
 
+def test_run_night_optimization_writes_engineering_outcome(tmp_path: Path) -> None:
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+
+    summary = run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-outcome",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=2,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+            seed=17,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    hf = json.loads(
+        (
+            case_dir
+            / "working"
+            / "night_optimization"
+            / "high_fidelity_results.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert hf["engineering_outcome"]["status"] in {
+        "engineering_winner",
+        "unverified_winner",
+        "no_engineering_winner",
+    }
+    assert "message" in hf["engineering_outcome"]
+
+
 def test_run_night_optimization_warm_starts_from_history(tmp_path: Path) -> None:
     """L1: a second run with a populated history places the top historical
     vectors into the initial NSGA-II population."""
