@@ -172,8 +172,13 @@ def run_night_optimization(
         history_store = HistoryStore(
             path=config.history_path if config.history_path is not None else None
         )
+        evidence_store = CFDEvidenceStore(_cfd_evidence_history_path(project_root))
         history_rows = history_store.load_all()
-        raw_warm_start_vectors = history_store.top_k(config.warm_start_top_k)
+        raw_warm_start_vectors = evidence_store.top_k_safe_warm_start(
+            config.warm_start_top_k
+        )
+        if not raw_warm_start_vectors:
+            raw_warm_start_vectors = history_store.top_k(config.warm_start_top_k)
         warm_start_vectors = [
             vector for vector in raw_warm_start_vectors if space.validate(vector)
         ]
