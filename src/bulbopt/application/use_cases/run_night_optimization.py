@@ -169,12 +169,20 @@ def run_night_optimization(
             path=config.history_path if config.history_path is not None else None
         )
         history_rows = history_store.load_all()
-        warm_start_vectors = history_store.top_k(config.warm_start_top_k)
+        raw_warm_start_vectors = history_store.top_k(config.warm_start_top_k)
+        warm_start_vectors = [
+            vector for vector in raw_warm_start_vectors if space.validate(vector)
+        ]
         if warm_start_vectors:
             case_logger.log_stage(
                 stage="night_optimization_warm_start",
                 status="loaded",
-                extra={"history_size": len(history_rows), "warm_start": len(warm_start_vectors)},
+                extra={
+                    "history_size": len(history_rows),
+                    "warm_start": len(warm_start_vectors),
+                    "rejected_by_constraints": len(raw_warm_start_vectors)
+                    - len(warm_start_vectors),
+                },
             )
 
         base_mid_evaluator = _mid_gate_evaluator(repaired_mesh, region, deformer)
@@ -285,7 +293,7 @@ def run_night_optimization(
 
         # L1: append every high-fidelity (vector, cd) pair to the history
         # JSONL so the next night-run can warm-start from it.
-        for hf in result.high_fidelity_results:
+        for hf in _engineering_valid_candidates(result.high_fidelity_results):
             if hf.objectives:
                 history_store.record(hf.vector, cd=float(hf.objectives[0]))
         case_logger.log_stage(
@@ -362,6 +370,10 @@ def run_night_optimization(
             region=region,
             deformer=deformer,
         )
+        winner_id = _winner_after_baseline_check(
+            winner_id=winner_id,
+            engineering_summary=engineering_summary,
+        )
         case_logger.log_stage(
             stage="night_optimization_outputs",
             status="completed",
@@ -402,7 +414,7 @@ def run_night_optimization(
 
         case.status = (
             CaseStatus.COMPLETED_WITH_WARNINGS
-            if result.budget_exhausted
+            if result.budget_exhausted or winner_id is None
             else CaseStatus.COMPLETED
         )
         case.is_recoverable = False
@@ -547,6 +559,11 @@ def _baseline_improvement_summary(
 
     winner_cd: float | None = None
     for row in high_fidelity_rows:
+        parameters = row.get("parameters")
+        if parameters is not None:
+            vector = KrachtVector(values=parameters)
+            if KrachtDesignSpace().constraint_violations(vector):
+                continue
         objectives = row.get("objectives") or []
         if not objectives:
             continue
@@ -564,6 +581,41 @@ def _baseline_improvement_summary(
         "winner_cd": float(winner_cd),
         "improvement_percent": float(improvement),
     }
+
+
+def _engineering_valid_candidates(candidates: Sequence) -> list:
+    """Return candidates that can be treated as engineering winners.
+
+    Penalty objectives and parameter constraint violations are not valid
+    engineering results even if the optimizer promoted them.
+    """
+    space = KrachtDesignSpace()
+    valid: list = []
+    for candidate in candidates:
+        objectives = list(getattr(candidate, "objectives", []) or [])
+        if not objectives:
+            continue
+        if float(objectives[0]) >= 1e8:
+            continue
+        vector = getattr(candidate, "vector", None)
+        if vector is None or space.constraint_violations(vector):
+            continue
+        valid.append(candidate)
+    return valid
+
+
+def _winner_after_baseline_check(
+    *,
+    winner_id: str | None,
+    engineering_summary: dict | None,
+) -> str | None:
+    """Only keep a winner when it improves over a measured baseline."""
+    if winner_id is None or engineering_summary is None:
+        return winner_id
+    improvement = float(engineering_summary.get("improvement_percent", 0.0))
+    if improvement <= 0.0:
+        return None
+    return winner_id
 
 
 # --- validity classifier glue (spec 2026-04-23 §4 L4) -------------------
@@ -820,14 +872,17 @@ def _persist_top_candidate_meshes(
     output_root = case_dir / "outputs" / "top_candidates"
     output_root.mkdir(parents=True, exist_ok=True)
 
-    ranked = list(result.high_fidelity_results) or [
+    if result.high_fidelity_results:
+        ranked = _engineering_valid_candidates(result.high_fidelity_results)
+    else:
+        ranked = _engineering_valid_candidates([
         type(
             "_CandidateAsResult",
             (),
             {"vector": candidate.vector, "objectives": candidate.objectives},
         )()
         for candidate in result.pareto_front.candidates
-    ]
+    ])
     winner_id: str | None = None
     invalid_candidates: List[dict] = []
     for index, candidate in enumerate(ranked[:10], start=1):

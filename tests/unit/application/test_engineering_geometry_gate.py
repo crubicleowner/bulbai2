@@ -5,9 +5,12 @@ import pytest
 
 from bulbopt.application.use_cases.run_night_optimization import (
     _baseline_improvement_summary,
+    _engineering_valid_candidates,
+    _winner_after_baseline_check,
     _mid_gate_evaluator,
     _run_baseline_simple_foam,
 )
+from bulbopt.optimization.strategies.cascade_strategy import HighFidelityResult
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
 from bulbopt.optimization.parametric.kracht_space import KrachtVector
 
@@ -79,3 +82,70 @@ def test_run_baseline_simple_foam_parses_openfoam13_cd(tmp_path) -> None:
 
     assert result is not None
     assert result["final_cd"] == pytest.approx(0.395914172090)
+
+
+def test_engineering_valid_candidates_excludes_penalty_and_constraint_violations() -> None:
+    valid = HighFidelityResult(
+        vector=KrachtVector(
+            values={
+                "length_ratio": 0.02,
+                "breadth_ratio": 0.08,
+                "height_ratio": 0.30,
+                "axis_z_ratio": 0.20,
+                "longitudinal_pos": 0.60,
+                "cross_section_c": 0.75,
+                "volume_coef": 0.65,
+                "nose_sharpness": 0.50,
+            }
+        ),
+        objectives=[0.32, 0.01],
+    )
+    penalized = HighFidelityResult(
+        vector=valid.vector,
+        objectives=[1e9, 1e9],
+    )
+    risky = HighFidelityResult(
+        vector=KrachtVector(
+            values={
+                "length_ratio": 0.044,
+                "breadth_ratio": 0.016,
+                "height_ratio": 0.54,
+                "axis_z_ratio": 0.25,
+                "longitudinal_pos": 0.75,
+                "cross_section_c": 0.999,
+                "volume_coef": 0.89,
+                "nose_sharpness": 0.055,
+            }
+        ),
+        objectives=[0.31, 0.01],
+    )
+
+    assert _engineering_valid_candidates([penalized, risky, valid]) == [valid]
+
+
+def test_winner_after_baseline_check_rejects_candidate_worse_than_baseline() -> None:
+    assert (
+        _winner_after_baseline_check(
+            winner_id="candidate-001",
+            engineering_summary={
+                "baseline_cd": 0.39591417209,
+                "winner_cd": 0.69755889307,
+                "improvement_percent": -76.1894224,
+            },
+        )
+        is None
+    )
+
+
+def test_winner_after_baseline_check_keeps_candidate_better_than_baseline() -> None:
+    assert (
+        _winner_after_baseline_check(
+            winner_id="candidate-001",
+            engineering_summary={
+                "baseline_cd": 0.39591417209,
+                "winner_cd": 0.32405712863,
+                "improvement_percent": 18.1496517,
+            },
+        )
+        == "candidate-001"
+    )

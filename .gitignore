@@ -17,6 +17,8 @@ OpenFOAM-v*/
 foam_projects/
 foam_test_projects/
 night_projects/
+projects/case-*/
+projects/.history/
 mesh_quality_snapshots/
 bm-out.txt
 bm-err.txt
