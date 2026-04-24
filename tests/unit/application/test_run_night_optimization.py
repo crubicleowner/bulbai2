@@ -807,6 +807,7 @@ def test_run_night_optimization_limits_and_deduplicates_warm_start(
                 seed=44,
                 warm_start_ratio=0.2,
                 warm_start_dedup_distance=0.02,
+                warm_start_mutation_ratio=0.0,
                 mid_gate_estimated_seconds_per_eval=0.001,
                 high_gate_estimated_seconds_per_eval=0.005,
             ),
@@ -838,6 +839,115 @@ def test_run_night_optimization_limits_and_deduplicates_warm_start(
     assert '"selected": 2' in case_log
     assert '"deduplicated": 1' in case_log
     assert '"random": 8' in case_log
+
+
+def test_run_night_optimization_mutates_elites_and_reports_warm_start(
+    tmp_path: Path,
+) -> None:
+    """Generation zero should contain elites, bounded mutations, and
+    forced random exploration, with the composition visible in the report."""
+    from bulbopt.optimization.strategies import nsga2_strategy as strategy_module
+
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    project_root = tmp_path / "projects"
+    elite = {
+        "length_ratio": 0.031,
+        "breadth_ratio": 0.085,
+        "height_ratio": 0.30,
+        "axis_z_ratio": 0.20,
+        "longitudinal_pos": 0.60,
+        "cross_section_c": 0.74,
+        "volume_coef": 0.64,
+        "nose_sharpness": 0.50,
+    }
+    CFDEvidenceStore(project_root / ".history" / "cfd_evidence.jsonl").append_many(
+        [
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": "elite",
+                "parameters": elite,
+                "final_cd": 0.30,
+                "baseline_cd": 0.40,
+                "improvement_percent": 25.0,
+                "engineering_valid": True,
+            }
+        ]
+    )
+
+    captured: list[list[float]] = []
+    original_build = strategy_module._build_initial_sampling
+
+    def spy_build(**kwargs):
+        array = original_build(**kwargs)
+        for row in array:
+            captured.append([float(x) for x in row])
+        return array
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(
+        strategy_module, "_build_initial_sampling", side_effect=spy_build
+    ):
+        summary = run_night_optimization(
+            project_root=project_root,
+            command=CreateCaseCommand(
+                case_name="night-mutated-warm-start",
+                source_path=str(source_path),
+                vessel_length_m=142.0,
+                vessel_beam_m=19.1,
+                vessel_draft_m=6.0,
+                displacement_t=8420.0,
+                speed_knots=[18.0, 20.0],
+            ),
+            config=NightOptimizationConfig(
+                population=10,
+                generations=2,
+                high_fidelity_budget=1,
+                runtime_budget_hours=1.0,
+                seed=45,
+                warm_start_ratio=0.2,
+                warm_start_mutation_ratio=0.4,
+                random_exploration_ratio=0.6,
+                mid_gate_estimated_seconds_per_eval=0.001,
+                high_gate_estimated_seconds_per_eval=0.005,
+            ),
+        )
+
+    order = (
+        "length_ratio",
+        "breadth_ratio",
+        "height_ratio",
+        "axis_z_ratio",
+        "longitudinal_pos",
+        "cross_section_c",
+        "volume_coef",
+        "nose_sharpness",
+    )
+    elite_row = [float(elite[name]) for name in order]
+    seeded_rows = captured[:4]
+
+    assert seeded_rows[0] == elite_row
+    assert len(seeded_rows) == 4
+    assert all(row != elite_row for row in seeded_rows[1:])
+    assert len({tuple(row) for row in seeded_rows}) == 4
+
+    case_dir = project_root / summary.case_id
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    warm_start = case_payload["summary_metrics"]["night_optimization"]["warm_start"]
+    assert warm_start["seeded"] == 1
+    assert warm_start["mutated"] == 3
+    assert warm_start["random"] == 6
+    assert warm_start["random_exploration_ratio"] == 0.6
+
+    report_text = (
+        case_dir / "outputs" / "reports" / "night_report.html"
+    ).read_text(encoding="utf-8")
+    assert "Warm-start composition" in report_text
+    assert "Seeded elites" in report_text
+    assert "Mutated elites" in report_text
+    assert "Random exploration" in report_text
 
 
 def test_run_night_optimization_trains_surrogate_from_cfd_evidence(

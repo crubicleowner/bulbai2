@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import random
 from typing import Callable, List, Sequence
 
 import trimesh
@@ -123,6 +124,12 @@ class NightOptimizationConfig:
     warm_start_ratio: float = 0.3
     # Minimum normalised Euclidean distance between seeded vectors.
     warm_start_dedup_distance: float = 0.02
+    # Mutated variants around elites fill part of generation zero without
+    # collapsing fully into clones.
+    warm_start_mutation_ratio: float = 0.2
+    warm_start_mutation_sigma: float = 0.05
+    # Hard floor for random generation-zero exploration.
+    random_exploration_ratio: float = 0.5
     # L1: minimum history size before the GP surrogate replaces the
     # analytic mid-gate proxy.
     gp_surrogate_min_history: int = 20
@@ -193,6 +200,10 @@ def run_night_optimization(
             population=config.population,
             ratio=config.warm_start_ratio,
             dedup_distance=config.warm_start_dedup_distance,
+            mutation_ratio=config.warm_start_mutation_ratio,
+            mutation_sigma=config.warm_start_mutation_sigma,
+            random_exploration_ratio=config.random_exploration_ratio,
+            seed=config.seed,
         )
         case_logger.log_stage(
             stage="night_optimization_warm_start",
@@ -459,6 +470,7 @@ def run_night_optimization(
                 rejected_candidates=rejected_candidates,
                 engineering_summary=engineering_summary,
                 engineering_outcome=engineering_outcome,
+                warm_start_summary=warm_start_summary,
             )
             case_logger.log_stage(
                 stage="build_night_report",
@@ -484,6 +496,7 @@ def run_night_optimization(
                 "high_fidelity_size": len(result.high_fidelity_results),
                 "budget_exhausted": result.budget_exhausted,
                 "winner_id": winner_id,
+                "warm_start": warm_start_summary,
                 "gate_timings": scheduler.gate_timings(),
                 "engineering_summary": engineering_summary,
                 "engineering_outcome": engineering_outcome,
@@ -754,10 +767,22 @@ def _select_warm_start_vectors(
     population: int,
     ratio: float,
     dedup_distance: float,
+    mutation_ratio: float = 0.0,
+    mutation_sigma: float = 0.05,
+    random_exploration_ratio: float = 0.5,
+    seed: int | None = None,
 ) -> tuple[list[KrachtVector], dict]:
     """Select a bounded, de-duplicated seed set for generation zero."""
     raw_vectors = list(raw_vectors)
-    max_seeded = _warm_start_seed_limit(population=population, ratio=ratio)
+    population = int(population)
+    non_random_limit = _non_random_warm_start_limit(
+        population=population,
+        random_exploration_ratio=random_exploration_ratio,
+    )
+    max_seeded = min(
+        _warm_start_seed_limit(population=population, ratio=ratio),
+        non_random_limit,
+    )
     selected: list[KrachtVector] = []
     rejected_by_constraints = 0
     deduplicated = 0
@@ -780,28 +805,98 @@ def _select_warm_start_vectors(
             continue
         selected.append(vector)
 
-    random_count = max(int(population) - len(selected), 0)
+    mutation_limit = min(
+        _warm_start_seed_limit(population=population, ratio=mutation_ratio),
+        max(non_random_limit - len(selected), 0),
+    )
+    mutated_vectors, mutation_skipped = _mutate_elite_vectors(
+        elites=selected,
+        space=space,
+        count=mutation_limit,
+        mutation_sigma=mutation_sigma,
+        dedup_distance=dedup_distance,
+        seed=seed,
+    )
+    warm_start_vectors = selected + mutated_vectors
+    random_count = max(population - len(warm_start_vectors), 0)
     summary = {
         "requested": len(raw_vectors),
         "selected": len(selected),
-        "warm_start": len(selected),
+        "warm_start": len(warm_start_vectors),
         "seeded": len(selected),
-        "mutated": 0,
+        "mutated": len(mutated_vectors),
         "random": random_count,
         "warm_start_ratio": float(ratio),
+        "warm_start_mutation_ratio": float(mutation_ratio),
+        "warm_start_mutation_sigma": float(mutation_sigma),
+        "random_exploration_ratio": float(random_exploration_ratio),
         "warm_start_limit": int(max_seeded),
+        "non_random_limit": int(non_random_limit),
         "deduplicated": deduplicated,
         "dedup_distance": float(dedup_distance),
         "rejected_by_constraints": rejected_by_constraints,
         "skipped_by_ratio": skipped_by_ratio,
+        "mutation_skipped": mutation_skipped,
     }
-    return selected, summary
+    return warm_start_vectors, summary
 
 
 def _warm_start_seed_limit(*, population: int, ratio: float) -> int:
     if population <= 0 or ratio <= 0.0:
         return 0
     return max(1, min(int(population), int(population * min(float(ratio), 1.0))))
+
+
+def _non_random_warm_start_limit(
+    *,
+    population: int,
+    random_exploration_ratio: float,
+) -> int:
+    if population <= 0:
+        return 0
+    random_floor = int(population * max(min(float(random_exploration_ratio), 1.0), 0.0))
+    return max(int(population) - random_floor, 0)
+
+
+def _mutate_elite_vectors(
+    *,
+    elites: Sequence[KrachtVector],
+    space: KrachtDesignSpace,
+    count: int,
+    mutation_sigma: float,
+    dedup_distance: float,
+    seed: int | None,
+) -> tuple[list[KrachtVector], int]:
+    if not elites or count <= 0 or mutation_sigma <= 0.0:
+        return [], 0
+    rng = random.Random(seed)
+    mutated: list[KrachtVector] = []
+    skipped = 0
+    attempts = 0
+    max_attempts = max(count * 50, 50)
+    while len(mutated) < count and attempts < max_attempts:
+        attempts += 1
+        elite = elites[(attempts - 1) % len(elites)]
+        values: dict[str, float] = {}
+        for name in KRACHT_PARAMETER_NAMES:
+            lo, hi = space.bounds[name]
+            width = float(hi) - float(lo)
+            value = float(elite.values[name]) + rng.gauss(0.0, mutation_sigma) * width
+            values[name] = min(max(value, float(lo)), float(hi))
+        candidate = KrachtVector(values=values)
+        if not space.validate(candidate):
+            skipped += 1
+            continue
+        if _is_near_existing_seed(
+            vector=candidate,
+            selected=[*elites, *mutated],
+            space=space,
+            dedup_distance=dedup_distance,
+        ):
+            skipped += 1
+            continue
+        mutated.append(candidate)
+    return mutated, skipped
 
 
 def _is_near_existing_seed(
@@ -1334,6 +1429,7 @@ def _render_night_report(
     rejected_candidates: List[dict] | None = None,
     engineering_summary: dict | None = None,
     engineering_outcome: dict | None = None,
+    warm_start_summary: dict | None = None,
 ) -> Path:
     template_root = Path(__file__).resolve().parents[2] / "reporting" / "templates"
     report = HtmlReportAdapter(template_root=template_root)
@@ -1385,6 +1481,7 @@ def _render_night_report(
         "rejected_candidates": list(rejected_candidates or []),
         "engineering_summary": engineering_summary,
         "engineering_outcome": engineering_outcome,
+        "warm_start_summary": warm_start_summary,
     }
 
     # The HtmlReportAdapter writes report.html via a hard-coded template
