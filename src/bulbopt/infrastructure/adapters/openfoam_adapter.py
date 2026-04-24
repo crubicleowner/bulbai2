@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 
@@ -57,6 +58,83 @@ def _configured_bin_dir() -> str | None:
     return None
 
 
+def _detect_wsl_openfoam(timeout_seconds: int = 20) -> dict[str, str] | None:
+    """Detect an OpenFOAM installation reachable through WSL.
+
+    Returns a small metadata dict when WSL can source an OpenFOAM bashrc and
+    resolve the core solver chain. Otherwise returns ``None``.
+    """
+    if os.environ.get("BULBOPT_DISABLE_WSL_OPENFOAM"):
+        return None
+    if sys.platform != "win32":
+        return None
+    try:
+        distros = subprocess.run(
+            ["wsl", "-l", "-q"],
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if distros.returncode != 0:
+        return None
+    distro_bytes = distros.stdout or b""
+    if b"\x00" in distro_bytes:
+        distro_text = distro_bytes.decode("utf-16le", errors="replace")
+    else:
+        distro_text = distro_bytes.decode(errors="replace")
+    distro_text = distro_text.replace("\r", "\n")
+    distro_names = [
+        line.strip()
+        for line in distro_text.splitlines()
+        if line.strip()
+    ]
+    for distro_name in distro_names:
+        try:
+            completed = subprocess.run(
+                [
+                    "wsl",
+                    "-d",
+                    distro_name,
+                    "bash",
+                    "-lc",
+                    (
+                        "bashrc=\\$(ls -1d "
+                        "/opt/openfoam*/etc/bashrc "
+                        "/mnt/wslg/distro/opt/openfoam*/etc/bashrc "
+                        "2>/dev/null | sort | tail -n 1); "
+                        "if [ -z \"\\$bashrc\" ]; then exit 1; fi; "
+                        "source \"\\$bashrc\" >/dev/null 2>&1; "
+                        "for exe in blockMesh snappyHexMesh checkMesh simpleFoam; do "
+                        "command -v \"\\$exe\" >/dev/null 2>&1 || exit 2; "
+                        "done; "
+                        f"printf 'distro=%s\\n' \"{distro_name}\"; "
+                        "printf 'bashrc=%s\\n' \"\\$bashrc\""
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+        if completed.returncode != 0:
+            continue
+        payload: dict[str, str] = {}
+        for line in (completed.stdout or "").splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            payload[key.strip()] = value.strip()
+        if not payload.get("bashrc"):
+            continue
+        payload.setdefault("distro", distro_name)
+        return payload
+    return None
+
+
 class OpenFOAMAdapter:
     """Optional boundary for future high-fidelity CFD integration."""
 
@@ -67,15 +145,23 @@ class OpenFOAMAdapter:
             return True
         if _configured_bin_dir():
             return True
+        if _detect_wsl_openfoam():
+            return True
         return any(shutil.which(executable) for executable in self.EXECUTABLE_CANDIDATES)
 
     def boundary_summary(self) -> dict[str, bool | str]:
-        return {
+        summary = {
             "adapter": "openfoam",
             "available": self.is_available(),
             "used": False,
             "mode": "optional",
         }
+        wsl_info = _detect_wsl_openfoam() if not _configured_bin_dir() else None
+        if wsl_info:
+            summary["runtime_backend"] = "wsl"
+            summary["wsl_distro"] = wsl_info.get("distro", "unknown")
+            summary["wsl_bashrc"] = wsl_info.get("bashrc", "")
+        return summary
 
     def build_case(
         self,
@@ -111,17 +197,16 @@ class OpenFOAMAdapter:
         (zero_dir / "omega").write_text(self._initial_omega(), encoding="utf-8")
         (zero_dir / "nut").write_text(self._initial_nut(), encoding="utf-8")
 
-        manifest = {
-            "adapter": "openfoam",
-            "available": self.is_available(),
-            "used": False,
-            "mode": "optional",
-            "case_built": True,
-            "best_candidate_id": best_candidate_id,
-            "case_directory": str(openfoam_case_dir),
-            "geometry_path": str(target_stl),
-            "mesh_templates": ["blockMeshDict", "snappyHexMeshDict"],
-        }
+        manifest = self.boundary_summary()
+        manifest.update(
+            {
+                "case_built": True,
+                "best_candidate_id": best_candidate_id,
+                "case_directory": str(openfoam_case_dir),
+                "geometry_path": str(target_stl),
+                "mesh_templates": ["blockMeshDict", "snappyHexMeshDict"],
+            }
+        )
         (openfoam_case_dir / "openfoam_case_manifest.json").write_text(
             json.dumps(manifest, indent=2),
             encoding="utf-8",
@@ -158,7 +243,7 @@ class OpenFOAMAdapter:
             "    forceCoeffs\n"
             "    {\n"
             "        type            forceCoeffs;\n"
-            "        libs            (forces);\n"
+            "        libs            (\"libforces.so\");\n"
             "        writeControl    timeStep;\n"
             "        writeInterval   1;\n"
             "        patches         (hull);\n"
@@ -386,6 +471,7 @@ class OpenFOAMAdapter:
             "    best_candidate.stl\n"
             "    {\n"
             "        type triSurfaceMesh;\n"
+            "        file \"best_candidate.stl\";\n"
             "        name hull;\n"
             "    }\n"
             "}\n"
