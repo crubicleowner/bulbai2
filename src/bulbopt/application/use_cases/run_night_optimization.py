@@ -118,6 +118,11 @@ class NightOptimizationConfig:
     # population with. Falls back to pure random sampling if the history
     # store is empty.
     warm_start_top_k: int = 10
+    # Keep generation zero diverse: only this fraction of the population may
+    # come from historical elites. The rest stays random/exploratory.
+    warm_start_ratio: float = 0.3
+    # Minimum normalised Euclidean distance between seeded vectors.
+    warm_start_dedup_distance: float = 0.02
     # L1: minimum history size before the GP surrogate replaces the
     # analytic mid-gate proxy.
     gp_surrogate_min_history: int = 20
@@ -182,20 +187,21 @@ def run_night_optimization(
         )
         if not raw_warm_start_vectors:
             raw_warm_start_vectors = history_store.top_k(config.warm_start_top_k)
-        warm_start_vectors = [
-            vector for vector in raw_warm_start_vectors if space.validate(vector)
-        ]
-        if warm_start_vectors:
-            case_logger.log_stage(
-                stage="night_optimization_warm_start",
-                status="loaded",
-                extra={
-                    "history_size": len(history_rows),
-                    "warm_start": len(warm_start_vectors),
-                    "rejected_by_constraints": len(raw_warm_start_vectors)
-                    - len(warm_start_vectors),
-                },
-            )
+        warm_start_vectors, warm_start_summary = _select_warm_start_vectors(
+            raw_vectors=raw_warm_start_vectors,
+            space=space,
+            population=config.population,
+            ratio=config.warm_start_ratio,
+            dedup_distance=config.warm_start_dedup_distance,
+        )
+        case_logger.log_stage(
+            stage="night_optimization_warm_start",
+            status="loaded" if warm_start_vectors else "empty",
+            extra={
+                "history_size": len(history_rows),
+                **warm_start_summary,
+            },
+        )
 
         base_mid_evaluator = _mid_gate_evaluator(repaired_mesh, region, deformer)
 
@@ -739,6 +745,92 @@ def _engineering_outcome(
 
 def _cfd_evidence_history_path(project_root: Path) -> Path:
     return Path(project_root) / ".history" / CFD_EVIDENCE_FILENAME
+
+
+def _select_warm_start_vectors(
+    *,
+    raw_vectors: Sequence[KrachtVector],
+    space: KrachtDesignSpace,
+    population: int,
+    ratio: float,
+    dedup_distance: float,
+) -> tuple[list[KrachtVector], dict]:
+    """Select a bounded, de-duplicated seed set for generation zero."""
+    raw_vectors = list(raw_vectors)
+    max_seeded = _warm_start_seed_limit(population=population, ratio=ratio)
+    selected: list[KrachtVector] = []
+    rejected_by_constraints = 0
+    deduplicated = 0
+    skipped_by_ratio = 0
+
+    for vector in raw_vectors:
+        if not space.validate(vector):
+            rejected_by_constraints += 1
+            continue
+        if _is_near_existing_seed(
+            vector=vector,
+            selected=selected,
+            space=space,
+            dedup_distance=dedup_distance,
+        ):
+            deduplicated += 1
+            continue
+        if len(selected) >= max_seeded:
+            skipped_by_ratio += 1
+            continue
+        selected.append(vector)
+
+    random_count = max(int(population) - len(selected), 0)
+    summary = {
+        "requested": len(raw_vectors),
+        "selected": len(selected),
+        "warm_start": len(selected),
+        "seeded": len(selected),
+        "mutated": 0,
+        "random": random_count,
+        "warm_start_ratio": float(ratio),
+        "warm_start_limit": int(max_seeded),
+        "deduplicated": deduplicated,
+        "dedup_distance": float(dedup_distance),
+        "rejected_by_constraints": rejected_by_constraints,
+        "skipped_by_ratio": skipped_by_ratio,
+    }
+    return selected, summary
+
+
+def _warm_start_seed_limit(*, population: int, ratio: float) -> int:
+    if population <= 0 or ratio <= 0.0:
+        return 0
+    return max(1, min(int(population), int(population * min(float(ratio), 1.0))))
+
+
+def _is_near_existing_seed(
+    *,
+    vector: KrachtVector,
+    selected: Sequence[KrachtVector],
+    space: KrachtDesignSpace,
+    dedup_distance: float,
+) -> bool:
+    if dedup_distance <= 0.0:
+        return False
+    return any(
+        _normalised_parameter_distance(vector, existing, space) < dedup_distance
+        for existing in selected
+    )
+
+
+def _normalised_parameter_distance(
+    a: KrachtVector,
+    b: KrachtVector,
+    space: KrachtDesignSpace,
+) -> float:
+    total = 0.0
+    for name in KRACHT_PARAMETER_NAMES:
+        lo, hi = space.bounds[name]
+        width = max(float(hi) - float(lo), 1e-12)
+        delta = (float(a.values[name]) - float(b.values[name])) / width
+        total += delta * delta
+    return total ** 0.5
 
 
 def _cfd_evidence_rows(
