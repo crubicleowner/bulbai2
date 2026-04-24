@@ -10,6 +10,7 @@ from bulbopt.application.use_cases.run_night_optimization import (
     _winner_after_baseline_check,
     _mid_gate_evaluator,
     _run_baseline_simple_foam,
+    _should_run_baseline_cfd,
 )
 from bulbopt.optimization.strategies.cascade_strategy import HighFidelityResult
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
@@ -196,3 +197,30 @@ def test_engineering_outcome_marks_missing_baseline_as_unverified() -> None:
         "winner_id": "candidate-001",
         "message": "Candidate exists, but no baseline CFD comparison is available.",
     }
+
+
+def test_should_run_baseline_cfd_only_when_valid_high_fidelity_exists() -> None:
+    valid = HighFidelityResult(
+        vector=KrachtVector(
+            values={
+                "length_ratio": 0.02,
+                "breadth_ratio": 0.08,
+                "height_ratio": 0.30,
+                "axis_z_ratio": 0.20,
+                "longitudinal_pos": 0.60,
+                "cross_section_c": 0.75,
+                "volume_coef": 0.65,
+                "nose_sharpness": 0.50,
+            }
+        ),
+        objectives=[0.32, 0.01],
+    )
+    penalty = HighFidelityResult(
+        vector=valid.vector,
+        objectives=[1e9, 1e9],
+    )
+
+    assert _should_run_baseline_cfd(openfoam_available=True, high_fidelity_results=[]) is False
+    assert _should_run_baseline_cfd(openfoam_available=True, high_fidelity_results=[penalty]) is False
+    assert _should_run_baseline_cfd(openfoam_available=True, high_fidelity_results=[valid]) is True
+    assert _should_run_baseline_cfd(openfoam_available=False, high_fidelity_results=[valid]) is False

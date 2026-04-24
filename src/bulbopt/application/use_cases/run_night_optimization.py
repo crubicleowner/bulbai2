@@ -239,21 +239,6 @@ def run_night_optimization(
             foam_work_root.mkdir(parents=True, exist_ok=True)
             builder = OpenFOAMAdapter()
             runner = OpenFOAMRunnerAdapter()
-            baseline_cfd_result = _run_baseline_simple_foam(
-                baseline_work_dir=case_dir
-                / "working"
-                / "night_optimization"
-                / "baseline_cfd",
-                geometry_path=case_dir / "working" / "repaired" / "repaired.stl",
-                build_case=builder.build_case,
-                run_case=runner.run_case,
-            )
-            if baseline_cfd_result is not None:
-                case_logger.log_stage(
-                    stage="baseline_cfd",
-                    status="completed",
-                    extra={"final_cd": baseline_cfd_result.get("final_cd")},
-                )
             foam_gate = SimpleFoamHighFidelityGate(
                 work_root=foam_work_root,
                 baseline_mesh=repaired_mesh,
@@ -290,6 +275,26 @@ def run_night_optimization(
             n_objectives=3,
         )
         result: CascadeResult = cascade.run()
+
+        if _should_run_baseline_cfd(
+            openfoam_available=openfoam_available,
+            high_fidelity_results=result.high_fidelity_results,
+        ):
+            baseline_cfd_result = _run_baseline_simple_foam(
+                baseline_work_dir=case_dir
+                / "working"
+                / "night_optimization"
+                / "baseline_cfd",
+                geometry_path=case_dir / "working" / "repaired" / "repaired.stl",
+                build_case=builder.build_case,
+                run_case=runner.run_case,
+            )
+            if baseline_cfd_result is not None:
+                case_logger.log_stage(
+                    stage="baseline_cfd",
+                    status="completed",
+                    extra={"final_cd": baseline_cfd_result.get("final_cd")},
+                )
 
         # L1: append every high-fidelity (vector, cd) pair to the history
         # JSONL so the next night-run can warm-start from it.
@@ -555,6 +560,18 @@ def _run_baseline_simple_foam(
         return None
     report["backend"] = "simple_foam"
     return report
+
+
+def _should_run_baseline_cfd(
+    *,
+    openfoam_available: bool,
+    high_fidelity_results: Sequence,
+) -> bool:
+    """Run baseline CFD only when it can be compared to a valid candidate."""
+    return bool(
+        openfoam_available
+        and _engineering_valid_candidates(high_fidelity_results)
+    )
 
 
 def _baseline_improvement_summary(
