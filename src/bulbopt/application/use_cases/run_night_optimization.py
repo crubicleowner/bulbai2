@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import random
@@ -165,6 +166,7 @@ def run_night_optimization(
 
         # Stage 2: cascade.
         case_logger.log_stage(stage="night_optimization", status="started")
+        hull_fingerprint = _file_sha256(Path(command.source_path))
         space = KrachtDesignSpace()
         deformer = BulbFFDDeformer()
         repaired_mesh = trimesh.load(
@@ -186,11 +188,26 @@ def run_night_optimization(
         )
         evidence_store = CFDEvidenceStore(_cfd_evidence_history_path(project_root))
         history_rows = history_store.load_all()
+        openfoam_available = (
+            high_fidelity_evaluator is None and detect_openfoam_available()
+        )
+        planned_high_gate_backend = (
+            "simple_foam"
+            if openfoam_available
+            else ("external" if high_fidelity_evaluator is not None else "surrogate")
+        )
+        settings_hash = _solver_settings_hash(backend=planned_high_gate_backend)
         surrogate_training_rows = (
-            evidence_store.surrogate_training_pairs() + history_rows
+            evidence_store.surrogate_training_pairs(
+                hull_fingerprint=hull_fingerprint,
+                settings_hash=settings_hash,
+            )
+            + history_rows
         )
         raw_warm_start_vectors = evidence_store.top_k_safe_warm_start(
-            config.warm_start_top_k
+            config.warm_start_top_k,
+            hull_fingerprint=hull_fingerprint,
+            settings_hash=settings_hash,
         )
         if not raw_warm_start_vectors:
             raw_warm_start_vectors = history_store.top_k(config.warm_start_top_k)
@@ -210,6 +227,10 @@ def run_night_optimization(
             status="loaded" if warm_start_vectors else "empty",
             extra={
                 "history_size": len(history_rows),
+                "evidence_eligibility": evidence_store.warm_start_eligibility_summary(
+                    hull_fingerprint=hull_fingerprint,
+                    settings_hash=settings_hash,
+                ),
                 **warm_start_summary,
             },
         )
@@ -250,9 +271,6 @@ def run_night_optimization(
             name="mid",
             evaluate=mid_evaluator,
             estimated_seconds_per_eval=config.mid_gate_estimated_seconds_per_eval,
-        )
-        openfoam_available = (
-            high_fidelity_evaluator is None and detect_openfoam_available()
         )
         baseline_cfd_result: dict | None = None
 
@@ -432,6 +450,8 @@ def run_night_optimization(
             case_id=case.case_id,
             case_name=case.case_name,
             source_path=command.source_path,
+            hull_fingerprint=hull_fingerprint,
+            settings_hash=settings_hash,
             high_fidelity_results=result.high_fidelity_results,
             backend=high_gate_backend,
             baseline_cfd_result=baseline_cfd_result,
@@ -760,6 +780,26 @@ def _cfd_evidence_history_path(project_root: Path) -> Path:
     return Path(project_root) / ".history" / CFD_EVIDENCE_FILENAME
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _solver_settings_hash(*, backend: str) -> str:
+    payload = {
+        "backend": backend,
+        "parameter_schema": list(KRACHT_PARAMETER_NAMES),
+        "geometry_gate_version": 1,
+        "objective_schema": "cd_volume_mesh_quality_v1",
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
 def _select_warm_start_vectors(
     *,
     raw_vectors: Sequence[KrachtVector],
@@ -933,6 +973,8 @@ def _cfd_evidence_rows(
     case_id: str,
     case_name: str,
     source_path: str,
+    hull_fingerprint: str,
+    settings_hash: str,
     high_fidelity_results: Sequence,
     backend: str,
     baseline_cfd_result: dict | None,
@@ -975,6 +1017,8 @@ def _cfd_evidence_rows(
                 "case_id": case_id,
                 "case_name": case_name,
                 "source_path": str(source_path),
+                "hull_fingerprint": hull_fingerprint,
+                "settings_hash": settings_hash,
                 "candidate_id": candidate_id,
                 "backend": backend,
                 "parameters": dict(vector.values),
@@ -1007,6 +1051,8 @@ def _cfd_evidence_rows(
                 "case_id": case_id,
                 "case_name": case_name,
                 "source_path": str(source_path),
+                "hull_fingerprint": hull_fingerprint,
+                "settings_hash": settings_hash,
                 "candidate_id": "baseline",
                 "backend": str(baseline_cfd_result.get("backend", "unknown")),
                 "parameters": {},

@@ -25,6 +25,7 @@ import pytest
 import trimesh
 
 from bulbopt.application.contracts.models import CreateCaseCommand
+from bulbopt.application.use_cases import run_night_optimization as run_night_module
 from bulbopt.application.use_cases.run_night_optimization import (
     NightOptimizationConfig,
     run_night_optimization,
@@ -36,6 +37,13 @@ from bulbopt.optimization.parametric.kracht_space import KrachtVector
 def _write_watertight_stl(path: Path) -> None:
     mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
     path.write_bytes(trimesh.exchange.stl.export_stl(mesh))
+
+
+def _compatibility_fields(source_path: Path, *, backend: str = "surrogate") -> dict:
+    return {
+        "hull_fingerprint": run_night_module._file_sha256(source_path),
+        "settings_hash": run_night_module._solver_settings_hash(backend=backend),
+    }
 
 
 def test_run_night_optimization_creates_case_and_writes_pareto_front(
@@ -631,6 +639,7 @@ def test_run_night_optimization_prefers_engineering_evidence_for_warm_start(
                 "baseline_cd": 0.40,
                 "improvement_percent": 20.0,
                 "engineering_valid": True,
+                **_compatibility_fields(source_path),
             },
             {
                 "schema_version": 1,
@@ -641,6 +650,7 @@ def test_run_night_optimization_prefers_engineering_evidence_for_warm_start(
                 "baseline_cd": 0.30,
                 "improvement_percent": -3.333,
                 "engineering_valid": True,
+                **_compatibility_fields(source_path),
             },
         ]
     )
@@ -740,6 +750,7 @@ def test_run_night_optimization_limits_and_deduplicates_warm_start(
                 "baseline_cd": 0.40,
                 "improvement_percent": 25.0,
                 "engineering_valid": True,
+                **_compatibility_fields(source_path),
             },
             {
                 "schema_version": 1,
@@ -750,6 +761,7 @@ def test_run_night_optimization_limits_and_deduplicates_warm_start(
                 "baseline_cd": 0.40,
                 "improvement_percent": 22.5,
                 "engineering_valid": True,
+                **_compatibility_fields(source_path),
             },
             {
                 "schema_version": 1,
@@ -760,6 +772,7 @@ def test_run_night_optimization_limits_and_deduplicates_warm_start(
                 "baseline_cd": 0.40,
                 "improvement_percent": 20.0,
                 "engineering_valid": True,
+                **_compatibility_fields(source_path),
             },
             {
                 "schema_version": 1,
@@ -770,6 +783,7 @@ def test_run_night_optimization_limits_and_deduplicates_warm_start(
                 "baseline_cd": 0.40,
                 "improvement_percent": 17.5,
                 "engineering_valid": True,
+                **_compatibility_fields(source_path),
             },
         ]
     )
@@ -872,6 +886,7 @@ def test_run_night_optimization_mutates_elites_and_reports_warm_start(
                 "baseline_cd": 0.40,
                 "improvement_percent": 25.0,
                 "engineering_valid": True,
+                **_compatibility_fields(source_path),
             }
         ]
     )
@@ -983,6 +998,7 @@ def test_run_night_optimization_trains_surrogate_from_cfd_evidence(
                 "baseline_cd": 0.50,
                 "improvement_percent": 16.0 + index * 0.1,
                 "engineering_valid": True,
+                **_compatibility_fields(source_path, backend="external"),
             }
         )
     rows.append(
@@ -993,6 +1009,7 @@ def test_run_night_optimization_trains_surrogate_from_cfd_evidence(
             "parameters": dict(rows[0]["parameters"]),
             "final_cd": 1e9,
             "engineering_valid": False,
+            **_compatibility_fields(source_path, backend="external"),
         }
     )
     CFDEvidenceStore(evidence_path).append_many(rows)
@@ -1038,3 +1055,128 @@ def test_run_night_optimization_trains_surrogate_from_cfd_evidence(
     )
 
     assert trained == {"vectors": 20, "cds": 20}
+
+
+def test_run_night_optimization_uses_only_compatible_cfd_evidence(
+    tmp_path: Path,
+) -> None:
+    """Evidence from another hull must be logged and ignored for reuse."""
+    from bulbopt.application.use_cases import run_night_optimization as use_case_module
+    from bulbopt.optimization.strategies import nsga2_strategy as strategy_module
+
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    project_root = tmp_path / "projects"
+    hull_fingerprint = use_case_module._file_sha256(source_path)
+    settings_hash = use_case_module._solver_settings_hash(backend="external")
+    compatible = {
+        "length_ratio": 0.031,
+        "breadth_ratio": 0.085,
+        "height_ratio": 0.30,
+        "axis_z_ratio": 0.20,
+        "longitudinal_pos": 0.60,
+        "cross_section_c": 0.74,
+        "volume_coef": 0.64,
+        "nose_sharpness": 0.50,
+    }
+    incompatible = dict(compatible, length_ratio=0.043)
+    CFDEvidenceStore(project_root / ".history" / "cfd_evidence.jsonl").append_many(
+        [
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": "compatible",
+                "parameters": compatible,
+                "final_cd": 0.32,
+                "baseline_cd": 0.40,
+                "improvement_percent": 20.0,
+                "engineering_valid": True,
+                "hull_fingerprint": hull_fingerprint,
+                "settings_hash": settings_hash,
+            },
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": "wrong-hull",
+                "parameters": incompatible,
+                "final_cd": 0.30,
+                "baseline_cd": 0.40,
+                "improvement_percent": 25.0,
+                "engineering_valid": True,
+                "hull_fingerprint": "other-hull",
+                "settings_hash": settings_hash,
+            },
+        ]
+    )
+
+    captured: list[list[float]] = []
+    original_build = strategy_module._build_initial_sampling
+
+    def spy_build(**kwargs):
+        array = original_build(**kwargs)
+        for row in array:
+            captured.append([float(x) for x in row])
+        return array
+
+    def external_high(vectors: list[KrachtVector]) -> list[list[float]]:
+        return [[0.33, 0.01] for _ in vectors]
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(
+        strategy_module, "_build_initial_sampling", side_effect=spy_build
+    ):
+        summary = run_night_optimization(
+            project_root=project_root,
+            command=CreateCaseCommand(
+                case_name="night-compatible-evidence",
+                source_path=str(source_path),
+                vessel_length_m=142.0,
+                vessel_beam_m=19.1,
+                vessel_draft_m=6.0,
+                displacement_t=8420.0,
+                speed_knots=[18.0, 20.0],
+            ),
+            config=NightOptimizationConfig(
+                population=5,
+                generations=2,
+                high_fidelity_budget=1,
+                runtime_budget_hours=1.0,
+                seed=46,
+                warm_start_mutation_ratio=0.0,
+                mid_gate_estimated_seconds_per_eval=0.001,
+                high_gate_estimated_seconds_per_eval=0.005,
+            ),
+            high_fidelity_evaluator=external_high,
+        )
+
+    order = (
+        "length_ratio",
+        "breadth_ratio",
+        "height_ratio",
+        "axis_z_ratio",
+        "longitudinal_pos",
+        "cross_section_c",
+        "volume_coef",
+        "nose_sharpness",
+    )
+    expected_compatible = [float(compatible[name]) for name in order]
+    expected_incompatible = [float(incompatible[name]) for name in order]
+    case_dir = project_root / summary.case_id
+    evidence_rows = [
+        json.loads(line)
+        for line in (
+            case_dir / "working" / "night_optimization" / "cfd_evidence.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert expected_compatible in captured
+    assert expected_incompatible not in captured
+    assert evidence_rows[0]["hull_fingerprint"] == hull_fingerprint
+    assert evidence_rows[0]["settings_hash"] == settings_hash
+
+    case_log = (case_dir / "logs" / "case.log").read_text(encoding="utf-8")
+    assert '"candidate_rows": 2' in case_log
+    assert '"eligible": 1' in case_log
+    assert '"hull_mismatch": 1' in case_log
