@@ -174,6 +174,9 @@ def run_night_optimization(
         )
         evidence_store = CFDEvidenceStore(_cfd_evidence_history_path(project_root))
         history_rows = history_store.load_all()
+        surrogate_training_rows = (
+            evidence_store.surrogate_training_pairs() + history_rows
+        )
         raw_warm_start_vectors = evidence_store.top_k_safe_warm_start(
             config.warm_start_top_k
         )
@@ -198,17 +201,17 @@ def run_night_optimization(
 
         # L1: wrap the mid-gate with a GP prediction once the history
         # crosses the threshold; otherwise keep the analytic proxy.
-        if len(history_rows) >= config.gp_surrogate_min_history:
+        if len(surrogate_training_rows) >= config.gp_surrogate_min_history:
             surrogate = GPSurrogate()
             surrogate.fit(
-                [vec for vec, _cd in history_rows],
-                [cd for _vec, cd in history_rows],
+                [vec for vec, _cd in surrogate_training_rows],
+                [cd for _vec, cd in surrogate_training_rows],
             )
             mid_evaluator = _wrap_mid_gate_with_gp(base_mid_evaluator, surrogate)
             case_logger.log_stage(
                 stage="night_optimization_surrogate",
                 status="trained",
-                extra={"training_points": len(history_rows)},
+                extra={"training_points": len(surrogate_training_rows)},
             )
         else:
             mid_evaluator = base_mid_evaluator

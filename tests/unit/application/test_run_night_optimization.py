@@ -703,3 +703,93 @@ def test_run_night_optimization_prefers_engineering_evidence_for_warm_start(
         all(abs(a - b) < 1e-9 for a, b in zip(row, worse))
         for row in captured
     )
+
+
+def test_run_night_optimization_trains_surrogate_from_cfd_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ML acceleration should use durable CFD evidence, not only legacy history."""
+    from bulbopt.application.use_cases import run_night_optimization as use_case_module
+
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    project_root = tmp_path / "projects"
+    evidence_path = project_root / ".history" / "cfd_evidence.jsonl"
+
+    rows: list[dict] = []
+    for index in range(20):
+        rows.append(
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": f"candidate-{index:03d}",
+                "parameters": {
+                    "length_ratio": 0.020 + index * 0.0005,
+                    "breadth_ratio": 0.080,
+                    "height_ratio": 0.250,
+                    "axis_z_ratio": 0.200,
+                    "longitudinal_pos": 0.550,
+                    "cross_section_c": 0.700,
+                    "volume_coef": 0.600,
+                    "nose_sharpness": 0.500,
+                },
+                "final_cd": 0.42 - index * 0.001,
+                "baseline_cd": 0.50,
+                "improvement_percent": 16.0 + index * 0.1,
+                "engineering_valid": True,
+            }
+        )
+    rows.append(
+        {
+            "schema_version": 1,
+            "record_type": "candidate",
+            "candidate_id": "candidate-invalid",
+            "parameters": dict(rows[0]["parameters"]),
+            "final_cd": 1e9,
+            "engineering_valid": False,
+        }
+    )
+    CFDEvidenceStore(evidence_path).append_many(rows)
+
+    trained: dict[str, int] = {}
+
+    class FakeSurrogate:
+        def fit(self, vectors, cds):
+            trained["vectors"] = len(vectors)
+            trained["cds"] = len(cds)
+
+        def predict(self, vectors):
+            vectors = list(vectors)
+            return [0.333 for _ in vectors], [0.01 for _ in vectors]
+
+    monkeypatch.setattr(use_case_module, "GPSurrogate", FakeSurrogate)
+
+    def external_high(vectors: list[KrachtVector]) -> list[list[float]]:
+        return [[0.40, 0.01] for _ in vectors]
+
+    run_night_optimization(
+        project_root=project_root,
+        command=CreateCaseCommand(
+            case_name="night-evidence-surrogate",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=2,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+            seed=43,
+            gp_surrogate_min_history=20,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+        ),
+        high_fidelity_evaluator=external_high,
+    )
+
+    assert trained == {"vectors": 20, "cds": 20}
