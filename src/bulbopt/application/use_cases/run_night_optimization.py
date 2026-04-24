@@ -35,6 +35,7 @@ in cost to mid gate) so unit tests run in milliseconds. The real
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Callable, List, Sequence
 
@@ -375,6 +376,13 @@ def run_night_optimization(
             region=region,
             deformer=deformer,
         )
+        rejected_candidates = _persist_rejected_candidate_meshes(
+            case_dir=case_dir,
+            candidates=result.high_fidelity_results,
+            repaired_mesh=repaired_mesh,
+            region=region,
+            deformer=deformer,
+        )
         winner_id = _winner_after_baseline_check(
             winner_id=winner_id,
             engineering_summary=engineering_summary,
@@ -385,6 +393,7 @@ def run_night_optimization(
         )
         high_fidelity_payload = json_store.read(night_dir / "high_fidelity_results.json")
         high_fidelity_payload["engineering_outcome"] = engineering_outcome
+        high_fidelity_payload["rejected_candidates"] = rejected_candidates
         json_store.write(night_dir / "high_fidelity_results.json", high_fidelity_payload)
         case_logger.log_stage(
             stage="night_optimization_outputs",
@@ -392,6 +401,7 @@ def run_night_optimization(
             extra={
                 "winner": winner_id or "n/a",
                 "stl_invalid_count": len(stl_invalid_candidates),
+                "rejected_count": len(rejected_candidates),
             },
         )
 
@@ -410,6 +420,7 @@ def run_night_optimization(
                     else ("external" if high_fidelity_evaluator is not None else "surrogate")
                 ),
                 stl_invalid_candidates=stl_invalid_candidates,
+                rejected_candidates=rejected_candidates,
                 engineering_summary=engineering_summary,
                 engineering_outcome=engineering_outcome,
             )
@@ -628,6 +639,22 @@ def _engineering_valid_candidates(candidates: Sequence) -> list:
             continue
         valid.append(candidate)
     return valid
+
+
+def _candidate_rejection_reasons(candidate) -> list[str]:
+    reasons: list[str] = []
+    objectives = list(getattr(candidate, "objectives", []) or [])
+    if not objectives:
+        reasons.append("missing_objectives")
+    elif float(objectives[0]) >= 1e8:
+        reasons.append("penalty_objective")
+
+    vector = getattr(candidate, "vector", None)
+    if vector is None:
+        reasons.append("missing_vector")
+    else:
+        reasons.extend(KrachtDesignSpace().constraint_violations(vector))
+    return reasons
 
 
 def _winner_after_baseline_check(
@@ -973,6 +1000,62 @@ def _persist_top_candidate_meshes(
     return winner_id, invalid_candidates
 
 
+def _persist_rejected_candidate_meshes(
+    *,
+    case_dir: Path,
+    candidates: Sequence,
+    repaired_mesh: trimesh.Trimesh,
+    region: dict,
+    deformer: BulbFFDDeformer,
+) -> list[dict]:
+    """Write rejected high-fidelity candidates into a quarantine folder."""
+    output_root = case_dir / "outputs" / "rejected_candidates"
+    rejected: list[dict] = []
+    for index, candidate in enumerate(candidates, start=1):
+        reasons = _candidate_rejection_reasons(candidate)
+        if not reasons:
+            continue
+
+        candidate_id = f"candidate-{index:03d}"
+        candidate_dir = output_root / candidate_id
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+
+        stl_path: str | None = None
+        stl_report: dict | None = None
+        vector = getattr(candidate, "vector", None)
+        if vector is not None:
+            try:
+                deformed = deformer.deform(repaired_mesh, region, vector)
+                geometry_path = candidate_dir / "geometry.stl"
+                geometry_path.write_bytes(trimesh.exchange.stl.export_stl(deformed))
+                stl_path = str(geometry_path.relative_to(case_dir))
+                stl_report = validate_stl(deformed)
+                (candidate_dir / "stl_valid.json").write_text(
+                    json.dumps(stl_report, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+                for reason in stl_report.get("failure_reasons", []):
+                    if reason not in reasons:
+                        reasons.append(str(reason))
+            except Exception as exc:
+                reasons.append(f"geometry_export_failed:{exc}")
+
+        payload = {
+            "candidate_id": candidate_id,
+            "reasons": reasons,
+            "objectives": list(getattr(candidate, "objectives", []) or []),
+            "parameters": dict(vector.values) if vector is not None else {},
+            "stl_path": stl_path,
+            "stl_report": stl_report,
+        }
+        (candidate_dir / "rejection.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        rejected.append(payload)
+    return rejected
+
+
 def _render_night_report(
     *,
     case_dir: Path,
@@ -983,6 +1066,7 @@ def _render_night_report(
     winner_id: str | None,
     high_gate_backend: str,
     stl_invalid_candidates: List[dict] | None = None,
+    rejected_candidates: List[dict] | None = None,
     engineering_summary: dict | None = None,
     engineering_outcome: dict | None = None,
 ) -> Path:
@@ -1033,6 +1117,7 @@ def _render_night_report(
         "high_gate_backend": high_gate_backend,
         "parameter_names": list(KRACHT_PARAMETER_NAMES),
         "stl_invalid_candidates": list(stl_invalid_candidates or []),
+        "rejected_candidates": list(rejected_candidates or []),
         "engineering_summary": engineering_summary,
         "engineering_outcome": engineering_outcome,
     }

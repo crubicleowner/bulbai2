@@ -395,6 +395,63 @@ def test_run_night_optimization_writes_engineering_outcome(tmp_path: Path) -> No
     assert "message" in hf["engineering_outcome"]
 
 
+def test_run_night_optimization_quarantines_rejected_high_fidelity_candidates(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+
+    def penalty_high(vectors: list[KrachtVector]) -> list[list[float]]:
+        return [[1e9, 1e9] for _ in vectors]
+
+    summary = run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-rejected",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=2,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+            seed=23,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+        ),
+        high_fidelity_evaluator=penalty_high,
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    rejected_dir = case_dir / "outputs" / "rejected_candidates" / "candidate-001"
+    rejection_path = rejected_dir / "rejection.json"
+    hf = json.loads(
+        (
+            case_dir
+            / "working"
+            / "night_optimization"
+            / "high_fidelity_results.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert summary.best_candidate_id is None
+    assert rejection_path.exists()
+    rejection = json.loads(rejection_path.read_text(encoding="utf-8"))
+    assert "penalty_objective" in rejection["reasons"]
+    assert hf["rejected_candidates"][0]["candidate_id"] == "candidate-001"
+    assert "penalty_objective" in hf["rejected_candidates"][0]["reasons"]
+    report_text = (
+        case_dir / "outputs" / "reports" / "night_report.html"
+    ).read_text(encoding="utf-8")
+    assert "Rejected high-fidelity candidates" in report_text
+    assert "penalty_objective" in report_text
+
+
 def test_run_night_optimization_warm_starts_from_history(tmp_path: Path) -> None:
     """L1: a second run with a populated history places the top historical
     vectors into the initial NSGA-II population."""

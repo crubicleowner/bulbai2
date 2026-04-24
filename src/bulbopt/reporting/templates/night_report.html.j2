@@ -119,6 +119,33 @@
     <p class="note">No Pareto candidates produced (budget exhausted before first generation?).</p>
     {% endif %}
 
+    {% if rejected_candidates %}
+    <h2 class="warn" style="padding: 6px 8px;">Rejected high-fidelity candidates ({{ rejected_candidates|length }})</h2>
+    <p class="note">These candidates were evaluated or promoted, but were not eligible to become engineering winners.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>candidate</th>
+          <th>reasons</th>
+          <th>drag / Cd</th>
+          <th>volume delta</th>
+          <th>STL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rejected in rejected_candidates %}
+        <tr class="warn">
+          <td>{{ rejected.candidate_id }}</td>
+          <td>{{ rejected.reasons|join(", ") }}</td>
+          <td>{{ "%.4f"|format(rejected.objectives[0] if rejected.objectives else 0.0) }}</td>
+          <td>{{ "%.4f"|format(rejected.objectives[1] if rejected.objectives|length > 1 else 0.0) }}</td>
+          <td><code>{{ rejected.stl_path or "n/a" }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
     <h2>Top high-fidelity candidates ({{ high_fidelity_size }})</h2>
     {% if high_fidelity %}
     <table>

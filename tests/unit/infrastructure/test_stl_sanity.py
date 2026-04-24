@@ -25,6 +25,10 @@ def test_validate_stl_watertight_mesh_all_checks_pass() -> None:
     assert report["volume"] > 0
     assert report["vertex_count"] > 0
     assert report["face_count"] > 0
+    assert report["degenerate_face_count"] == 0
+    assert report["high_aspect_face_count"] == 0
+    assert report["geometry_risk"] == "low"
+    assert report["failure_reasons"] == []
     assert report["checks_passed"] is True
 
 
@@ -67,3 +71,40 @@ def test_validate_stl_volume_zero_marks_failure() -> None:
     report = validate_stl(flat)
     assert report["checks_passed"] is False
     assert report["volume"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_validate_stl_reports_degenerate_triangle_metrics() -> None:
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]
+    )
+    faces = np.array([[0, 1, 2]])
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+
+    report = validate_stl(mesh)
+
+    assert report["degenerate_face_count"] == 1
+    assert "degenerate_faces" in report["failure_reasons"]
+    assert report["geometry_risk"] == "high"
+    assert report["checks_passed"] is False
+
+
+def test_validate_stl_reports_high_aspect_triangle_metrics() -> None:
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0],
+        ]
+    )
+    faces = np.array([[0, 1, 2]])
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+
+    report = validate_stl(mesh)
+
+    assert report["max_triangle_aspect_ratio"] > 1000.0
+    assert report["high_aspect_face_count"] == 1
+    assert "high_aspect_triangles" in report["failure_reasons"]
