@@ -292,6 +292,60 @@ def test_run_cli_evidence_command_can_emit_json(
     assert payload["rows"][0]["improvement_percent"] == pytest.approx(22.5)
 
 
+def test_run_cli_evidence_command_can_fail_when_warm_start_evidence_is_insufficient(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+    project_root = tmp_path / "projects"
+    hull_fingerprint = run_night_module._file_sha256(source_path)
+    settings_hash = run_night_module._solver_settings_hash(backend="external")
+    CFDEvidenceStore(project_root / ".history" / "cfd_evidence.jsonl").append_many(
+        [
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": "candidate-one",
+                "case_id": "case-one",
+                "parameters": {
+                    "length_ratio": 0.031,
+                    "breadth_ratio": 0.085,
+                    "height_ratio": 0.30,
+                    "axis_z_ratio": 0.20,
+                    "longitudinal_pos": 0.60,
+                    "cross_section_c": 0.74,
+                    "volume_coef": 0.64,
+                    "nose_sharpness": 0.50,
+                },
+                "final_cd": 0.31,
+                "baseline_cd": 0.40,
+                "improvement_percent": 22.5,
+                "engineering_valid": True,
+                "hull_fingerprint": hull_fingerprint,
+                "settings_hash": settings_hash,
+            }
+        ]
+    )
+
+    exit_code = run_cli(
+        [
+            "evidence",
+            "--project", str(project_root),
+            "--source", str(source_path),
+            "--backend", "external",
+            "--json",
+            "--min-eligible", "2",
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert payload["summary"]["eligible"] == 1
+    assert payload["required_eligible"] == 2
+    assert payload["ready_for_warm_start"] is False
+
+
 def test_run_cli_without_arguments_shows_usage_and_returns_nonzero(
     capsys: pytest.CaptureFixture,
 ) -> None:

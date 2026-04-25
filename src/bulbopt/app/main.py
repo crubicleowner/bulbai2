@@ -95,6 +95,12 @@ def run_cli(argv: list[str]) -> int:
         action="store_true",
         help="Emit machine-readable JSON instead of text",
     )
+    evidence_parser.add_argument(
+        "--min-eligible",
+        type=int,
+        default=0,
+        help="Return non-zero unless at least this many compatible rows are eligible",
+    )
 
     if not argv:
         parser.print_help(sys.stderr)
@@ -232,12 +238,16 @@ def run_cli(argv: list[str]) -> int:
             "hull_fingerprint": hull_fingerprint,
             "settings_hash": settings_hash,
             "backend": str(namespace.backend),
+            "required_eligible": int(namespace.min_eligible),
+            "ready_for_warm_start": (
+                int(summary["eligible"]) >= int(namespace.min_eligible)
+            ),
             "summary": summary,
             "rows": rows,
         }
         if namespace.json:
             print(json.dumps(payload, sort_keys=True))
-            return 0
+            return 0 if payload["ready_for_warm_start"] else 1
         print(
             "Evidence eligibility: "
             f"candidate_rows={summary['candidate_rows']} "
@@ -247,6 +257,14 @@ def run_cli(argv: list[str]) -> int:
             f"not_engineering_valid={summary['not_engineering_valid']} "
             f"not_improving={summary['not_improving']}"
         )
+        if not payload["ready_for_warm_start"]:
+            print(
+                "Warm-start gate failed: "
+                f"eligible={summary['eligible']} "
+                f"required={namespace.min_eligible}",
+                file=sys.stderr,
+            )
+            return 1
         if not rows:
             print("No compatible CFD evidence found")
             return 0
