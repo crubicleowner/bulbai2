@@ -76,11 +76,26 @@ def parse_drag_coefficient_dat(
         )
 
     final_time, final_cd = rows[-1]
+    cd_stability = _cd_stability(rows)
     result: dict = {
         "final_cd": final_cd,
         "iterations": len(rows),
         "final_time": final_time,
         "source_format": source_format,
+        "cd_stability": cd_stability,
+        "solver_convergence": {
+            "status": (
+                "cd_stable"
+                if cd_stability["stable"]
+                else (
+                    "cd_unstable"
+                    if cd_stability["window_size"] >= 3
+                    else "cd_insufficient_samples"
+                )
+            ),
+            "cd_stable": cd_stability["stable"],
+            "residuals_available": None,
+        },
     }
 
     if (
@@ -100,3 +115,25 @@ def parse_drag_coefficient_dat(
         result["drag_newtons"] = None
 
     return result
+
+
+def _cd_stability(rows: list[tuple[float, float]]) -> dict:
+    window = rows[-4:]
+    values = [float(cd) for _time, cd in window]
+    if not values:
+        return {
+            "stable": False,
+            "window_size": 0,
+            "max_delta": None,
+            "relative_delta": None,
+        }
+
+    max_delta = max(values) - min(values)
+    final_abs = abs(values[-1])
+    relative_delta = max_delta / max(final_abs, 1e-12)
+    return {
+        "stable": len(values) >= 3 and relative_delta <= 0.01,
+        "window_size": len(values),
+        "max_delta": float(max_delta),
+        "relative_delta": float(relative_delta),
+    }
