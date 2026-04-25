@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import trimesh
 import pytest
+import numpy as np
 
 from bulbopt.application.use_cases.run_night_optimization import (
     _baseline_improvement_summary,
@@ -39,6 +40,41 @@ def test_mid_gate_penalizes_coupled_geometry_constraint_violation() -> None:
     )
 
     row = evaluator([risky_vector])[0]
+
+    assert row == [1e9, 1e9, 1e9]
+
+
+def test_mid_gate_penalizes_invalid_deformed_stl() -> None:
+    class BrokenDeformer:
+        def deform(self, mesh, region, vector):
+            return trimesh.Trimesh(
+                vertices=np.array(
+                    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+                ),
+                faces=np.array([[0, 1, 2]]),
+                process=False,
+            )
+
+    mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
+    evaluator = _mid_gate_evaluator(
+        mesh,
+        {"axis_index": 0, "axis_min": 0.0, "axis_max": 2.0},
+        BrokenDeformer(),
+    )
+    vector = KrachtVector(
+        values={
+            "length_ratio": 0.02,
+            "breadth_ratio": 0.08,
+            "height_ratio": 0.30,
+            "axis_z_ratio": 0.20,
+            "longitudinal_pos": 0.60,
+            "cross_section_c": 0.75,
+            "volume_coef": 0.65,
+            "nose_sharpness": 0.50,
+        }
+    )
+
+    row = evaluator([vector])[0]
 
     assert row == [1e9, 1e9, 1e9]
 

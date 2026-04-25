@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from bulbopt.infrastructure.adapters.simple_foam_gate import _read_force_coeffs
@@ -71,3 +72,54 @@ def test_simple_foam_gate_penalizes_constraint_violation_before_building_case(
 
     assert calls == []
     assert objectives == [[1e9, 1e9]]
+
+
+def test_simple_foam_gate_skips_cfd_when_deformed_stl_is_invalid(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class BrokenDeformer:
+        def deform(self, mesh, region, vector):
+            vertices = np.array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+            )
+            faces = np.array([[0, 1, 2]])
+            return trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+
+    def build_case(*args, **kwargs):
+        calls.append("build")
+        return {}
+
+    def run_case(*args, **kwargs):
+        calls.append("run")
+        return {"status": "executed_ok"}
+
+    gate = SimpleFoamHighFidelityGate(
+        work_root=tmp_path,
+        baseline_mesh=trimesh.creation.box(extents=(4.0, 1.5, 1.0)),
+        region={"axis_index": 0, "axis_min": 0.0, "axis_max": 2.0},
+        deformer=BrokenDeformer(),
+        build_case=build_case,
+        run_case=run_case,
+    )
+    vector = KrachtVector(
+        values={
+            "length_ratio": 0.020,
+            "breadth_ratio": 0.080,
+            "height_ratio": 0.30,
+            "axis_z_ratio": 0.20,
+            "longitudinal_pos": 0.60,
+            "cross_section_c": 0.75,
+            "volume_coef": 0.65,
+            "nose_sharpness": 0.50,
+        }
+    )
+
+    objectives = gate.evaluate([vector])
+
+    assert calls == []
+    assert objectives == [[1e9, 1e9]]
+    assert gate.evaluation_records[0]["solver_status"] == "skipped"
+    assert gate.evaluation_records[0]["solver_reason"] == "stl_invalid"
+    assert "non_positive_volume" in gate.evaluation_records[0]["stl_report"]["failure_reasons"]

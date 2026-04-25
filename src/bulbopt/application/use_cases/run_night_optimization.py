@@ -568,6 +568,10 @@ def _mid_gate_evaluator(
                 objectives.append([1e9, 1e9, 1e9])
                 continue
             deformed = deformer.deform(baseline_mesh, region, vector)
+            stl_report = validate_stl(deformed)
+            if not stl_report["checks_passed"]:
+                objectives.append([1e9, 1e9, 1e9])
+                continue
             extents = deformed.extents.astype(float)
             primary = int(region.get("axis_index", int(extents.argmax())))
             secondary = [i for i in range(3) if i != primary]

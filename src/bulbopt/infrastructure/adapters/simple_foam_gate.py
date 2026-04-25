@@ -37,6 +37,7 @@ from bulbopt.infrastructure.adapters.force_coeffs_parser import (
     ForceCoeffsNotFoundError,
     parse_drag_coefficient_dat,
 )
+from bulbopt.infrastructure.adapters.stl_sanity import validate_stl
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
 from bulbopt.optimization.parametric.kracht_space import KrachtDesignSpace, KrachtVector
 
@@ -89,8 +90,22 @@ class SimpleFoamHighFidelityGate:
             )
             return [1e9, 1e9]
 
-        deformed = self.deformer.deform(self.baseline_mesh, self.region, vector)
         candidate_id = f"candidate-{uuid.uuid4().hex[:8]}"
+        deformed = self.deformer.deform(self.baseline_mesh, self.region, vector)
+        stl_report = validate_stl(deformed)
+        if not stl_report["checks_passed"]:
+            self.evaluation_records.append(
+                {
+                    "parameters": dict(vector.values),
+                    "foam_candidate_id": candidate_id,
+                    "solver_status": "skipped",
+                    "solver_reason": "stl_invalid",
+                    "stl_report": stl_report,
+                    "objectives": [1e9, 1e9],
+                }
+            )
+            return [1e9, 1e9]
+
         candidate_case_dir = Path(self.work_root) / candidate_id
         candidate_case_dir.mkdir(parents=True, exist_ok=True)
 
