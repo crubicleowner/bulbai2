@@ -475,6 +475,18 @@ def test_run_night_optimization_writes_cfd_evidence_jsonl(tmp_path: Path) -> Non
     assert row["geometry"]["geometry_risk"] in {"low", "medium", "high"}
     assert row["geometry"]["manufacturability_risk"] in {"clear", "warning"}
 
+    hf_payload = json.loads(
+        (
+            case_dir
+            / "working"
+            / "night_optimization"
+            / "high_fidelity_results.json"
+        ).read_text(encoding="utf-8")
+    )
+    hf_row = hf_payload["results"][0]
+    assert hf_row["geometry"]["stl_report"]["checks_passed"] is True
+    assert hf_row["geometry"]["manufacturability_risk"] in {"clear", "warning"}
+
 
 def test_run_night_optimization_quarantines_rejected_high_fidelity_candidates(
     tmp_path: Path,

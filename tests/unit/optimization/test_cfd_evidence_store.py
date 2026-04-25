@@ -28,6 +28,13 @@ def _row(**overrides) -> dict:
         "engineering_valid": True,
         "hull_fingerprint": "hull-a",
         "settings_hash": "settings-a",
+        "geometry": {
+            "stl_report": {"checks_passed": True},
+            "parameter_warnings": [],
+            "constraint_violations": [],
+            "geometry_risk": "low",
+            "manufacturability_risk": "clear",
+        },
     }
     payload.update(overrides)
     return payload
@@ -63,6 +70,8 @@ def test_cfd_evidence_store_filters_warm_start_by_compatibility(
         "hull_mismatch": 1,
         "settings_mismatch": 1,
         "not_engineering_valid": 0,
+        "geometry_high_risk": 0,
+        "manufacturability_warning": 0,
         "not_improving": 0,
         "missing_final_cd": 0,
         "missing_parameters": 0,
@@ -112,3 +121,52 @@ def test_cfd_evidence_store_lists_best_compatible_rows_by_cd(
     )
 
     assert [row["candidate_id"] for row in rows] == ["best"]
+
+
+def test_cfd_evidence_store_excludes_geometry_risk_from_warm_start(
+    tmp_path: Path,
+) -> None:
+    store = CFDEvidenceStore(tmp_path / "cfd_evidence.jsonl")
+    store.append_many(
+        [
+            _row(candidate_id="safe", final_cd=0.34),
+            _row(
+                candidate_id="bad-stl",
+                final_cd=0.30,
+                geometry={
+                    "stl_report": {"checks_passed": False},
+                    "parameter_warnings": [],
+                    "constraint_violations": [],
+                    "geometry_risk": "high",
+                    "manufacturability_risk": "clear",
+                },
+            ),
+            _row(
+                candidate_id="near-bound",
+                final_cd=0.31,
+                geometry={
+                    "stl_report": {"checks_passed": True},
+                    "parameter_warnings": ["sharp_full_section_near_limit"],
+                    "constraint_violations": [],
+                    "geometry_risk": "medium",
+                    "manufacturability_risk": "warning",
+                },
+            ),
+        ]
+    )
+
+    rows = store.best_candidate_rows(
+        5,
+        hull_fingerprint="hull-a",
+        settings_hash="settings-a",
+    )
+    summary = store.warm_start_eligibility_summary(
+        hull_fingerprint="hull-a",
+        settings_hash="settings-a",
+    )
+
+    assert [row["candidate_id"] for row in rows] == ["safe"]
+    assert summary["candidate_rows"] == 3
+    assert summary["eligible"] == 1
+    assert summary["geometry_high_risk"] == 1
+    assert summary["manufacturability_warning"] == 1

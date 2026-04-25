@@ -116,6 +116,8 @@ class CFDEvidenceStore:
             "hull_mismatch": 0,
             "settings_mismatch": 0,
             "not_engineering_valid": 0,
+            "geometry_high_risk": 0,
+            "manufacturability_warning": 0,
             "not_improving": 0,
             "missing_final_cd": 0,
             "missing_parameters": 0,
@@ -215,6 +217,27 @@ class CFDEvidenceStore:
             return "missing_final_cd"
         if self._vector_from_row(row) is None:
             return "missing_parameters"
+        geometry_reason = self._geometry_rejection_reason(row)
+        if geometry_reason is not None:
+            return geometry_reason
+        return None
+
+    def _geometry_rejection_reason(self, row: dict) -> str | None:
+        geometry = row.get("geometry")
+        if not isinstance(geometry, dict):
+            return None
+
+        if geometry.get("constraint_violations"):
+            return "geometry_high_risk"
+        stl_report = geometry.get("stl_report")
+        if isinstance(stl_report, dict) and stl_report.get("checks_passed") is False:
+            return "geometry_high_risk"
+        if geometry.get("geometry_risk") == "high":
+            return "geometry_high_risk"
+        if geometry.get("manufacturability_risk") == "warning":
+            return "manufacturability_warning"
+        if geometry.get("parameter_warnings"):
+            return "manufacturability_warning"
         return None
 
     def _vector_from_row(self, row: dict) -> KrachtVector | None:

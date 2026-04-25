@@ -381,14 +381,30 @@ def run_night_optimization(
                 ],
             },
         )
-        high_fidelity_rows = [
-            {
-                "vector": [r.vector.values[name] for name in KRACHT_PARAMETER_NAMES],
-                "parameters": dict(r.vector.values),
-                "objectives": list(r.objectives),
-            }
-            for r in result.high_fidelity_results
-        ]
+        foam_evaluation_records = (
+            list(foam_gate.evaluation_records) if foam_gate is not None else []
+        )
+        high_fidelity_rows = []
+        for index, r in enumerate(result.high_fidelity_results):
+            foam_record = (
+                dict(foam_evaluation_records[index])
+                if index < len(foam_evaluation_records)
+                else None
+            )
+            high_fidelity_rows.append(
+                {
+                    "vector": [r.vector.values[name] for name in KRACHT_PARAMETER_NAMES],
+                    "parameters": dict(r.vector.values),
+                    "objectives": list(r.objectives),
+                    "geometry": _candidate_geometry_evidence(
+                        candidate=r,
+                        baseline_mesh=repaired_mesh,
+                        region=region,
+                        deformer=deformer,
+                        foam_record=foam_record,
+                    ),
+                }
+            )
         baseline_cd = (
             float(baseline_cfd_result["final_cd"])
             if baseline_cfd_result is not None
@@ -457,9 +473,7 @@ def run_night_optimization(
             baseline_cfd_result=baseline_cfd_result,
             engineering_outcome=engineering_outcome,
             rejected_candidates=rejected_candidates,
-            foam_evaluation_records=(
-                list(foam_gate.evaluation_records) if foam_gate is not None else []
-            ),
+            foam_evaluation_records=foam_evaluation_records,
             baseline_mesh=repaired_mesh,
             region=region,
             deformer=deformer,
