@@ -128,6 +128,58 @@ class KrachtDesignSpace:
 
         return violations
 
+    def manufacturability_warnings(self, vector: KrachtVector) -> List[str]:
+        """Return soft risk labels for valid but boundary-seeking geometry.
+
+        These warnings are intentionally not hard rejections: they mark
+        candidates that are still legal but close to regions where the FFD
+        parameterisation can create sharp noses, over-full sections, or aft
+        high bulbs that deserve manual review before manufacturing.
+        """
+        if self.constraint_violations(vector):
+            return []
+
+        values = vector.values
+        warnings: List[str] = []
+
+        def add(label: str) -> None:
+            if label not in warnings:
+                warnings.append(label)
+
+        length_ratio = float(values["length_ratio"])
+        height_ratio = float(values["height_ratio"])
+        axis_z_ratio = float(values["axis_z_ratio"])
+        longitudinal_pos = float(values["longitudinal_pos"])
+        cross_section = float(values["cross_section_c"])
+        volume_coef = float(values["volume_coef"])
+        nose = float(values["nose_sharpness"])
+
+        if length_ratio >= 0.043:
+            add("length_ratio_near_upper_bound")
+        if height_ratio >= 0.52:
+            add("height_ratio_near_upper_bound")
+        if axis_z_ratio >= 0.48:
+            add("axis_z_ratio_near_upper_bound")
+        if longitudinal_pos >= 0.80:
+            add("longitudinal_pos_near_aft_limit")
+        if cross_section >= 0.95:
+            add("cross_section_c_near_upper_bound")
+        if volume_coef >= 0.86:
+            add("volume_coef_near_upper_bound")
+        if nose <= 0.10:
+            add("nose_sharpness_near_lower_bound")
+
+        if cross_section >= 0.95 and nose <= 0.10:
+            add("sharp_full_section_near_limit")
+        if volume_coef >= 0.86 and nose <= 0.10:
+            add("high_volume_sharp_nose_near_limit")
+        if longitudinal_pos >= 0.80 and height_ratio >= 0.52:
+            add("aft_high_bulb_near_limit")
+        if axis_z_ratio >= 0.48 and height_ratio >= 0.52:
+            add("high_axis_high_bulb_near_limit")
+
+        return warnings
+
     def to_array(self, vector: KrachtVector) -> List[float]:
         """Convert a vector to a list of floats in declared order."""
         return [float(vector.values[name]) for name in KRACHT_PARAMETER_NAMES]

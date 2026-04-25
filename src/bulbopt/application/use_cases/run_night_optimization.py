@@ -1403,6 +1403,15 @@ def _persist_top_candidate_meshes(
         # L6: write stl_valid.json next to geometry.stl and remember
         # any failing candidates so the report can warn the engineer.
         report = validate_stl(deformed)
+        parameter_warnings = KrachtDesignSpace().manufacturability_warnings(
+            candidate.vector
+        )
+        report["parameter_warnings"] = parameter_warnings
+        report["manufacturability_risk"] = (
+            "warning" if parameter_warnings else "clear"
+        )
+        if parameter_warnings and report.get("geometry_risk") == "low":
+            report["geometry_risk"] = "medium"
         import json as _json
 
         (candidate_dir / "stl_valid.json").write_text(
@@ -1502,14 +1511,27 @@ def _render_night_report(
         )
 
     high_fidelity = []
+    parameter_warning_candidates = []
+    design_space = KrachtDesignSpace()
     for index, r in enumerate(result.high_fidelity_results, start=1):
         candidate_id = f"candidate-{index:03d}"
         stl_path = case_dir / "outputs" / "top_candidates" / candidate_id / "geometry.stl"
+        parameter_warnings = design_space.manufacturability_warnings(r.vector)
+        if parameter_warnings:
+            parameter_warning_candidates.append(
+                {
+                    "candidate_id": candidate_id,
+                    "warnings": parameter_warnings,
+                    "parameters": dict(r.vector.values),
+                }
+            )
         high_fidelity.append(
             {
+                "candidate_id": candidate_id,
                 "parameters": dict(r.vector.values),
                 "objectives": list(r.objectives),
                 "stl_path": str(stl_path.relative_to(case_dir)),
+                "parameter_warnings": parameter_warnings,
             }
         )
 
@@ -1534,6 +1556,7 @@ def _render_night_report(
         "high_gate_backend": high_gate_backend,
         "parameter_names": list(KRACHT_PARAMETER_NAMES),
         "stl_invalid_candidates": list(stl_invalid_candidates or []),
+        "parameter_warning_candidates": parameter_warning_candidates,
         "rejected_candidates": list(rejected_candidates or []),
         "engineering_summary": engineering_summary,
         "engineering_outcome": engineering_outcome,

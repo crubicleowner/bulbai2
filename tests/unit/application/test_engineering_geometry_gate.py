@@ -1,20 +1,29 @@
 from __future__ import annotations
 
+import json
+
 import trimesh
 import pytest
 import numpy as np
 
+from bulbopt.application.contracts.models import CreateCaseCommand
 from bulbopt.application.use_cases.run_night_optimization import (
+    NightOptimizationConfig,
     _baseline_improvement_summary,
     _engineering_outcome,
     _engineering_valid_candidates,
     _winner_after_baseline_check,
     _mid_gate_evaluator,
+    _persist_top_candidate_meshes,
+    _render_night_report,
     _run_baseline_simple_foam,
     _should_run_baseline_cfd,
     _solver_evidence,
 )
+from bulbopt.optimization.scheduler.budget_scheduler import BudgetScheduler
 from bulbopt.optimization.strategies.cascade_strategy import HighFidelityResult
+from bulbopt.optimization.strategies.cascade_strategy import CascadeResult
+from bulbopt.optimization.strategies.nsga2_strategy import ParetoFront
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
 from bulbopt.optimization.parametric.kracht_space import KrachtVector
 
@@ -290,3 +299,90 @@ def test_solver_evidence_includes_simple_foam_solver_report() -> None:
     assert evidence["solver_report"]["residuals_available"] is True
     assert evidence["solver_report"]["completed"] is True
     assert evidence["solver_report"]["last_time"] == pytest.approx(200.0)
+
+
+def test_persist_top_candidate_meshes_writes_parameter_warnings(tmp_path) -> None:
+    risky_vector = KrachtVector(
+        values={
+            "length_ratio": 0.044,
+            "breadth_ratio": 0.08,
+            "height_ratio": 0.54,
+            "axis_z_ratio": 0.49,
+            "longitudinal_pos": 0.84,
+            "cross_section_c": 0.96,
+            "volume_coef": 0.87,
+            "nose_sharpness": 0.09,
+        }
+    )
+    result = CascadeResult(
+        pareto_front=ParetoFront(candidates=[]),
+        high_fidelity_results=[
+            HighFidelityResult(vector=risky_vector, objectives=[0.32, 0.01])
+        ],
+    )
+
+    winner_id, invalid = _persist_top_candidate_meshes(
+        case_dir=tmp_path,
+        result=result,
+        repaired_mesh=trimesh.creation.box(extents=(4.0, 1.5, 1.0)),
+        region={"axis_index": 0, "axis_min": 0.0, "axis_max": 2.0},
+        deformer=BulbFFDDeformer(),
+    )
+
+    report_path = (
+        tmp_path / "outputs" / "top_candidates" / "candidate-001" / "stl_valid.json"
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert winner_id == "candidate-001"
+    assert invalid == []
+    assert "parameter_warnings" in report
+    assert "sharp_full_section_near_limit" in report["parameter_warnings"]
+
+
+def test_render_night_report_shows_parameter_warning_candidates(tmp_path) -> None:
+    risky_vector = KrachtVector(
+        values={
+            "length_ratio": 0.044,
+            "breadth_ratio": 0.08,
+            "height_ratio": 0.54,
+            "axis_z_ratio": 0.49,
+            "longitudinal_pos": 0.84,
+            "cross_section_c": 0.96,
+            "volume_coef": 0.87,
+            "nose_sharpness": 0.09,
+        }
+    )
+    result = CascadeResult(
+        pareto_front=ParetoFront(candidates=[]),
+        high_fidelity_results=[
+            HighFidelityResult(vector=risky_vector, objectives=[0.32, 0.01])
+        ],
+    )
+
+    report_path = _render_night_report(
+        case_dir=tmp_path,
+        command=CreateCaseCommand(
+            case_name="near-bound-risk",
+            source_path=str(tmp_path / "hull.stl"),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0],
+        ),
+        config=NightOptimizationConfig(
+            population=5,
+            generations=1,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+        ),
+        result=result,
+        scheduler=BudgetScheduler(runtime_budget_hours=1.0),
+        winner_id="candidate-001",
+        high_gate_backend="surrogate",
+    )
+
+    html = report_path.read_text(encoding="utf-8")
+    assert "Manufacturability parameter warnings" in html
+    assert "candidate-001" in html
+    assert "sharp_full_section_near_limit" in html

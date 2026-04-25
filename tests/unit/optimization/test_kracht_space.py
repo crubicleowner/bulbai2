@@ -140,6 +140,30 @@ def test_kracht_design_space_rejects_full_section_with_too_sharp_nose() -> None:
     assert "full_section_with_sharp_nose" in space.constraint_violations(vector)
 
 
+def test_kracht_design_space_warns_on_near_bound_manufacturability_risk() -> None:
+    space = KrachtDesignSpace()
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.044,
+            "breadth_ratio":    0.08,
+            "height_ratio":     0.54,
+            "axis_z_ratio":     0.49,
+            "longitudinal_pos": 0.84,
+            "cross_section_c":  0.96,
+            "volume_coef":      0.87,
+            "nose_sharpness":   0.09,
+        }
+    )
+
+    assert space.validate(vector) is True
+    assert space.constraint_violations(vector) == []
+    warnings = space.manufacturability_warnings(vector)
+    assert "nose_sharpness_near_lower_bound" in warnings
+    assert "cross_section_c_near_upper_bound" in warnings
+    assert "sharp_full_section_near_limit" in warnings
+    assert "aft_high_bulb_near_limit" in warnings
+
+
 def test_kracht_design_space_validate_rejects_missing_parameter() -> None:
     space = KrachtDesignSpace()
     vector = KrachtVector(values={"length_ratio": 0.02})  # missing the other 7

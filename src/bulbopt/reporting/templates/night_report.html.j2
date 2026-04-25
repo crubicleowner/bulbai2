@@ -57,6 +57,31 @@
     </table>
     {% endif %}
 
+    {% if parameter_warning_candidates %}
+    <h2 class="warn" style="padding: 6px 8px;">Manufacturability parameter warnings ({{ parameter_warning_candidates|length }})</h2>
+    <p class="note">These candidates passed hard constraints but are close to parameter regions that can create folded, sharp, or hard-to-manufacture bulb geometry.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>candidate</th>
+          <th>warnings</th>
+          {% for name in parameter_names %}<th>{{ name }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in parameter_warning_candidates %}
+        <tr class="warn">
+          <td>{{ entry.candidate_id }}</td>
+          <td>{{ entry.warnings|join(", ") }}</td>
+          {% for name in parameter_names %}
+          <td>{{ "%.4f"|format(entry.parameters[name]) }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
     <h2>Run summary</h2>
     <table class="narrow">
       <tr><th>Runtime budget (hours)</th><td>{{ runtime_budget_hours }}</td></tr>
@@ -166,6 +191,7 @@
         <tr>
           <th>#</th>
           <th>drag / Cd / Newtons</th>
+          <th>parameter warnings</th>
           <th>volume Δ</th>
           <th>STL</th>
         </tr>
@@ -175,6 +201,7 @@
         <tr class="ok">
           <td>{{ loop.index }}</td>
           <td>{{ "%.4f"|format(result.objectives[0]) }}</td>
+          <td>{{ result.parameter_warnings|join(", ") if result.parameter_warnings else "none" }}</td>
           <td>{{ "%.4f"|format(result.objectives[1]) }}</td>
           <td><code>{{ result.stl_path }}</code></td>
         </tr>
