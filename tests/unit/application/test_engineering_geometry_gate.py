@@ -88,6 +88,49 @@ def test_mid_gate_penalizes_invalid_deformed_stl() -> None:
     assert row == [1e9, 1e9, 1e9]
 
 
+def test_mid_gate_soft_penalizes_near_bound_manufacturability_risk() -> None:
+    class IdentityDeformer:
+        def deform(self, mesh, region, vector):
+            return mesh.copy()
+
+    mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
+    evaluator = _mid_gate_evaluator(
+        mesh,
+        {"axis_index": 0, "axis_min": 0.0, "axis_max": 2.0},
+        IdentityDeformer(),
+    )
+    safe_vector = KrachtVector(
+        values={
+            "length_ratio": 0.02,
+            "breadth_ratio": 0.08,
+            "height_ratio": 0.30,
+            "axis_z_ratio": 0.20,
+            "longitudinal_pos": 0.60,
+            "cross_section_c": 0.75,
+            "volume_coef": 0.65,
+            "nose_sharpness": 0.50,
+        }
+    )
+    risky_vector = KrachtVector(
+        values={
+            "length_ratio": 0.044,
+            "breadth_ratio": 0.08,
+            "height_ratio": 0.54,
+            "axis_z_ratio": 0.49,
+            "longitudinal_pos": 0.84,
+            "cross_section_c": 0.96,
+            "volume_coef": 0.87,
+            "nose_sharpness": 0.09,
+        }
+    )
+
+    safe_row, risky_row = evaluator([safe_vector, risky_vector])
+
+    assert safe_row[0] < risky_row[0]
+    assert safe_row[2] < risky_row[2]
+    assert risky_row[0] < 1e8
+
+
 def test_baseline_improvement_summary_reports_percent_gain() -> None:
     summary = _baseline_improvement_summary(
         baseline_cd=0.395914172090,

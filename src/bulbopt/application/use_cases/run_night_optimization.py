@@ -586,12 +586,24 @@ def _mid_gate_evaluator(
             volume_delta = abs(deformed_volume - baseline_volume) / max(baseline_volume, 1e-6)
             # L2: mesh quality — broken meshes get >= 100 and dominated.
             mesh_quality = compute_mesh_quality(deformed)
+            manufacturability_penalty = _manufacturability_penalty(
+                design_space.manufacturability_warnings(vector)
+            )
+            resistance_proxy *= 1.0 + manufacturability_penalty
+            mesh_quality += manufacturability_penalty
             objectives.append(
                 [float(resistance_proxy), float(volume_delta), float(mesh_quality)]
             )
         return objectives
 
     return evaluate
+
+
+def _manufacturability_penalty(warnings: Sequence[str]) -> float:
+    """Small soft penalty for valid candidates near risky parameter limits."""
+    if not warnings:
+        return 0.0
+    return min(0.30, 0.03 * float(len(warnings)))
 
 
 def _default_high_evaluator(
