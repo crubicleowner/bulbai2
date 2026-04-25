@@ -103,6 +103,11 @@
       <tr><th>Random exploration</th><td>{{ warm_start_summary.random }}</td></tr>
       <tr><th>Deduplicated</th><td>{{ warm_start_summary.deduplicated }}</td></tr>
       <tr><th>Rejected by constraints</th><td>{{ warm_start_summary.rejected_by_constraints }}</td></tr>
+      {% if warm_start_summary.evidence_eligibility %}
+      <tr><th>Evidence rows eligible</th><td>{{ warm_start_summary.evidence_eligibility.eligible }}</td></tr>
+      <tr><th>Geometry high-risk evidence rejected</th><td>{{ warm_start_summary.evidence_eligibility.geometry_high_risk }}</td></tr>
+      <tr><th>Manufacturability warning evidence rejected</th><td>{{ warm_start_summary.evidence_eligibility.manufacturability_warning }}</td></tr>
+      {% endif %}
       <tr><th>Random exploration ratio</th><td>{{ "%.2f"|format(warm_start_summary.random_exploration_ratio) }}</td></tr>
     </table>
     {% endif %}

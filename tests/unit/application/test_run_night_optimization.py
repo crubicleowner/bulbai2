@@ -668,6 +668,42 @@ def test_run_night_optimization_prefers_engineering_evidence_for_warm_start(
                 "engineering_valid": True,
                 **_compatibility_fields(source_path),
             },
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": "candidate-bad-geometry",
+                "parameters": dict(evidence_vector, length_ratio=0.034),
+                "final_cd": 0.29,
+                "baseline_cd": 0.40,
+                "improvement_percent": 27.5,
+                "engineering_valid": True,
+                "geometry": {
+                    "stl_report": {"checks_passed": False},
+                    "parameter_warnings": [],
+                    "constraint_violations": [],
+                    "geometry_risk": "high",
+                    "manufacturability_risk": "clear",
+                },
+                **_compatibility_fields(source_path),
+            },
+            {
+                "schema_version": 1,
+                "record_type": "candidate",
+                "candidate_id": "candidate-near-bound",
+                "parameters": dict(evidence_vector, length_ratio=0.035),
+                "final_cd": 0.28,
+                "baseline_cd": 0.40,
+                "improvement_percent": 30.0,
+                "engineering_valid": True,
+                "geometry": {
+                    "stl_report": {"checks_passed": True},
+                    "parameter_warnings": ["sharp_full_section_near_limit"],
+                    "constraint_violations": [],
+                    "geometry_risk": "medium",
+                    "manufacturability_risk": "warning",
+                },
+                **_compatibility_fields(source_path),
+            },
         ]
     )
 
@@ -685,7 +721,7 @@ def test_run_night_optimization_prefers_engineering_evidence_for_warm_start(
     with _mock.patch.object(
         strategy_module, "_build_initial_sampling", side_effect=spy_build
     ):
-        run_night_optimization(
+        summary = run_night_optimization(
             project_root=project_root,
             command=CreateCaseCommand(
                 case_name="night-evidence-warm-start",
@@ -720,6 +756,10 @@ def test_run_night_optimization_prefers_engineering_evidence_for_warm_start(
     expected = [float(evidence_vector[name]) for name in parameter_order]
     worse = list(expected)
     worse[0] = 0.033
+    bad_geometry = list(expected)
+    bad_geometry[0] = 0.034
+    near_bound = list(expected)
+    near_bound[0] = 0.035
 
     assert any(
         all(abs(a - b) < 1e-9 for a, b in zip(row, expected))
@@ -729,6 +769,27 @@ def test_run_night_optimization_prefers_engineering_evidence_for_warm_start(
         all(abs(a - b) < 1e-9 for a, b in zip(row, worse))
         for row in captured
     )
+    assert not any(
+        all(abs(a - b) < 1e-9 for a, b in zip(row, bad_geometry))
+        for row in captured
+    )
+    assert not any(
+        all(abs(a - b) < 1e-9 for a, b in zip(row, near_bound))
+        for row in captured
+    )
+
+    case_dir = project_root / summary.case_id
+    case_payload = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
+    eligibility = case_payload["summary_metrics"]["night_optimization"]["warm_start"][
+        "evidence_eligibility"
+    ]
+    assert eligibility["geometry_high_risk"] == 1
+    assert eligibility["manufacturability_warning"] == 1
+    report_text = (case_dir / "outputs" / "reports" / "night_report.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Geometry high-risk evidence rejected" in report_text
+    assert "Manufacturability warning evidence rejected" in report_text
 
 
 def test_run_night_optimization_limits_and_deduplicates_warm_start(

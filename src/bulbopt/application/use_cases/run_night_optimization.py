@@ -209,6 +209,10 @@ def run_night_optimization(
             hull_fingerprint=hull_fingerprint,
             settings_hash=settings_hash,
         )
+        evidence_eligibility = evidence_store.warm_start_eligibility_summary(
+            hull_fingerprint=hull_fingerprint,
+            settings_hash=settings_hash,
+        )
         if not raw_warm_start_vectors:
             raw_warm_start_vectors = history_store.top_k(config.warm_start_top_k)
         warm_start_vectors, warm_start_summary = _select_warm_start_vectors(
@@ -222,15 +226,13 @@ def run_night_optimization(
             random_exploration_ratio=config.random_exploration_ratio,
             seed=config.seed,
         )
+        warm_start_summary["evidence_eligibility"] = evidence_eligibility
         case_logger.log_stage(
             stage="night_optimization_warm_start",
             status="loaded" if warm_start_vectors else "empty",
             extra={
                 "history_size": len(history_rows),
-                "evidence_eligibility": evidence_store.warm_start_eligibility_summary(
-                    hull_fingerprint=hull_fingerprint,
-                    settings_hash=settings_hash,
-                ),
+                "evidence_eligibility": evidence_eligibility,
                 **warm_start_summary,
             },
         )
