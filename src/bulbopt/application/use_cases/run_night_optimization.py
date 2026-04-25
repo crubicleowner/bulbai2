@@ -460,6 +460,9 @@ def run_night_optimization(
             foam_evaluation_records=(
                 list(foam_gate.evaluation_records) if foam_gate is not None else []
             ),
+            baseline_mesh=repaired_mesh,
+            region=region,
+            deformer=deformer,
         )
         CFDEvidenceStore(night_dir / CFD_EVIDENCE_FILENAME).write_all(evidence_rows)
         CFDEvidenceStore(_cfd_evidence_history_path(project_root)).append_many(
@@ -997,6 +1000,9 @@ def _cfd_evidence_rows(
     engineering_outcome: dict,
     rejected_candidates: Sequence[dict],
     foam_evaluation_records: Sequence[dict],
+    baseline_mesh: trimesh.Trimesh,
+    region: dict,
+    deformer: BulbFFDDeformer,
 ) -> list[dict]:
     """Build durable high-fidelity evidence rows for audit and ML reuse."""
     created_at = datetime.now(timezone.utc).isoformat()
@@ -1025,6 +1031,13 @@ def _cfd_evidence_rows(
             if index - 1 < len(foam_evaluation_records)
             else None
         )
+        geometry = _candidate_geometry_evidence(
+            candidate=candidate,
+            baseline_mesh=baseline_mesh,
+            region=region,
+            deformer=deformer,
+            foam_record=foam_record,
+        )
         rows.append(
             {
                 "schema_version": 1,
@@ -1048,6 +1061,7 @@ def _cfd_evidence_rows(
                 "engineering_valid": id(candidate) in valid_candidate_ids,
                 "engineering_outcome": dict(engineering_outcome),
                 "rejection_reasons": rejection_by_id.get(candidate_id, []),
+                "geometry": geometry,
                 "solver": _solver_evidence(foam_record),
                 "force_coeffs": (
                     foam_record.get("force_coeffs")
@@ -1085,6 +1099,57 @@ def _cfd_evidence_rows(
             }
         )
     return rows
+
+
+def _candidate_geometry_evidence(
+    *,
+    candidate,
+    baseline_mesh: trimesh.Trimesh,
+    region: dict,
+    deformer: BulbFFDDeformer,
+    foam_record: dict | None,
+) -> dict:
+    """Build geometry/manufacturability labels for evidence rows."""
+    vector = getattr(candidate, "vector", None)
+    if vector is None:
+        return {
+            "stl_report": None,
+            "parameter_warnings": [],
+            "constraint_violations": ["missing_vector"],
+            "geometry_risk": "high",
+            "manufacturability_risk": "warning",
+        }
+
+    design_space = KrachtDesignSpace()
+    parameter_warnings = design_space.manufacturability_warnings(vector)
+    constraint_violations = design_space.constraint_violations(vector)
+    stl_report = (
+        foam_record.get("stl_report")
+        if foam_record is not None and foam_record.get("stl_report") is not None
+        else None
+    )
+    if stl_report is None:
+        try:
+            deformed = deformer.deform(baseline_mesh, region, vector)
+            stl_report = validate_stl(deformed)
+        except Exception as exc:
+            stl_report = {
+                "checks_passed": False,
+                "geometry_risk": "high",
+                "failure_reasons": [f"geometry_evidence_failed:{exc}"],
+            }
+
+    geometry_risk = str(stl_report.get("geometry_risk", "high"))
+    if parameter_warnings and geometry_risk == "low":
+        geometry_risk = "medium"
+
+    return {
+        "stl_report": stl_report,
+        "parameter_warnings": parameter_warnings,
+        "constraint_violations": constraint_violations,
+        "geometry_risk": geometry_risk,
+        "manufacturability_risk": "warning" if parameter_warnings else "clear",
+    }
 
 
 def _candidate_improvement_percent(

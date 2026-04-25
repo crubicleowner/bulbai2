@@ -470,6 +470,10 @@ def test_run_night_optimization_writes_cfd_evidence_jsonl(tmp_path: Path) -> Non
     assert row["engineering_outcome"]["status"] == "unverified_winner"
     assert set(row["parameters"]) >= {"length_ratio", "nose_sharpness"}
     assert row["objectives"] == [0.321, 0.012]
+    assert row["geometry"]["stl_report"]["checks_passed"] is True
+    assert isinstance(row["geometry"]["parameter_warnings"], list)
+    assert row["geometry"]["geometry_risk"] in {"low", "medium", "high"}
+    assert row["geometry"]["manufacturability_risk"] in {"clear", "warning"}
 
 
 def test_run_night_optimization_quarantines_rejected_high_fidelity_candidates(
