@@ -11,6 +11,7 @@ from bulbopt.application.use_cases.run_night_optimization import (
     _mid_gate_evaluator,
     _run_baseline_simple_foam,
     _should_run_baseline_cfd,
+    _solver_evidence,
 )
 from bulbopt.optimization.strategies.cascade_strategy import HighFidelityResult
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
@@ -224,3 +225,32 @@ def test_should_run_baseline_cfd_only_when_valid_high_fidelity_exists() -> None:
     assert _should_run_baseline_cfd(openfoam_available=True, high_fidelity_results=[penalty]) is False
     assert _should_run_baseline_cfd(openfoam_available=True, high_fidelity_results=[valid]) is True
     assert _should_run_baseline_cfd(openfoam_available=False, high_fidelity_results=[valid]) is False
+
+
+def test_solver_evidence_includes_simple_foam_solver_report() -> None:
+    evidence = _solver_evidence(
+        {
+            "solver_status": "executed_ok",
+            "solver_reason": "solver_chain_completed",
+            "foam_candidate_id": "candidate-foam",
+            "run_manifest": {
+                "high_fidelity_used": True,
+                "executed_steps": [
+                    {"command": ["blockMesh"], "returncode": 0},
+                    {
+                        "command": ["simpleFoam"],
+                        "returncode": 0,
+                        "solver_report": {
+                            "residuals_available": True,
+                            "completed": True,
+                            "last_time": 200.0,
+                        },
+                    },
+                ],
+            },
+        }
+    )
+
+    assert evidence["solver_report"]["residuals_available"] is True
+    assert evidence["solver_report"]["completed"] is True
+    assert evidence["solver_report"]["last_time"] == pytest.approx(200.0)

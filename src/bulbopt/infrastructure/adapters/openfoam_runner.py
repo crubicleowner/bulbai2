@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -181,6 +182,8 @@ class OpenFOAMRunnerAdapter:
                         overall_returncode = 1
                         failing_step = "checkMesh"
                         break
+                if solver_name == "simpleFoam":
+                    step["solver_report"] = _parse_simple_foam_output(stdout_text)
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
                 error_text = str(exc)
                 stderr_log_path.write_text(error_text, encoding="utf-8")
@@ -321,6 +324,8 @@ class OpenFOAMRunnerAdapter:
                         overall_returncode = 1
                         failing_step = "checkMesh"
                         break
+                if solver_name == "simpleFoam":
+                    step["solver_report"] = _parse_simple_foam_output(stdout_text)
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
                 error_text = str(exc)
                 stderr_log_path.write_text(error_text, encoding="utf-8")
@@ -392,3 +397,36 @@ class OpenFOAMRunnerAdapter:
             parts = [part for part in resolved.parts[1:] if part not in {"\\", "/"}]
             return "/mnt/" + drive + "/" + "/".join(parts).replace("\\", "/")
         return str(resolved).replace("\\", "/")
+
+
+def _parse_simple_foam_output(stdout_text: str) -> dict:
+    residual_rows: list[dict] = []
+    equations: list[str] = []
+    for match in re.finditer(
+        r"Solving for\s+([^,]+),\s+Initial residual\s+=\s+([0-9.eE+-]+),"
+        r"\s+Final residual\s+=\s+([0-9.eE+-]+)",
+        stdout_text,
+    ):
+        equation = match.group(1).strip()
+        if equation not in equations:
+            equations.append(equation)
+        residual_rows.append(
+            {
+                "equation": equation,
+                "initial": float(match.group(2)),
+                "final": float(match.group(3)),
+            }
+        )
+
+    time_values = [
+        float(match.group(1))
+        for match in re.finditer(r"^\s*Time\s+=\s+([0-9.eE+-]+)", stdout_text, re.M)
+    ]
+    completed = bool(re.search(r"^\s*End\s*$", stdout_text, re.M))
+    return {
+        "residuals_available": bool(residual_rows),
+        "completed": completed,
+        "last_time": time_values[-1] if time_values else None,
+        "residual_equations": equations,
+        "last_residuals": residual_rows[-len(equations):] if equations else [],
+    }

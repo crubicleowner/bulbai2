@@ -325,6 +325,70 @@ def test_openfoam_runner_includes_simple_foam_in_default_solver_chain(
     assert any("simplefoam" in c for c in commands_lower)
 
 
+def test_openfoam_runner_records_simple_foam_convergence_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The run manifest should expose whether simpleFoam produced residuals
+    and reached ``End`` so CFD evidence can distinguish a completed solve from
+    a merely successful subprocess."""
+    import subprocess as subprocess_module
+
+    case_dir = tmp_path / "case-convergence"
+    geometry_path = case_dir / "candidate.stl"
+    geometry_path.parent.mkdir(parents=True, exist_ok=True)
+    geometry_path.write_text("solid demo\nendsolid demo\n", encoding="utf-8")
+
+    builder = OpenFOAMAdapter()
+    monkeypatch.setattr(builder, "is_available", lambda: True)
+    manifest = builder.build_case(
+        case_dir,
+        best_candidate_id="candidate-conv",
+        best_candidate_geometry_path=geometry_path,
+    )
+
+    runner = OpenFOAMRunnerAdapter()
+    monkeypatch.setattr(runner, "is_available", lambda: True)
+
+    class _FakeProc:
+        def __init__(self, args, rc=0, stdout="", stderr=""):
+            self.args, self.returncode, self.stdout, self.stderr = args, rc, stdout, stderr
+
+    simple_log = (
+        "Time = 200\n"
+        "smoothSolver:  Solving for Ux, Initial residual = 1e-04, Final residual = 1e-06, No Iterations 2\n"
+        "GAMG:  Solving for p, Initial residual = 2e-04, Final residual = 2e-06, No Iterations 3\n"
+        "End\n"
+    )
+
+    def fake_run(args, **kwargs):
+        solver = args[0].lower()
+        if "checkmesh" in solver:
+            return _FakeProc(args, 0, stdout="Mesh OK.\n")
+        if "simplefoam" in solver:
+            return _FakeProc(args, 0, stdout=simple_log)
+        return _FakeProc(args, 0, stdout="ok\n")
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    result = runner.run_case(
+        case_dir / "working" / "openfoam_case",
+        case_manifest=manifest,
+        execute=True,
+    )
+
+    simple_step = next(
+        step
+        for step in result["executed_steps"]
+        if step["command"][0] == "simpleFoam"
+    )
+    report = simple_step["solver_report"]
+    assert report["residuals_available"] is True
+    assert report["completed"] is True
+    assert report["last_time"] == pytest.approx(200.0)
+    assert report["residual_equations"] == ["Ux", "p"]
+
+
 def test_openfoam_runner_executes_solver_chain_when_available(
     tmp_path: Path,
     monkeypatch,

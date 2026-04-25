@@ -1090,12 +1090,18 @@ def _solver_evidence(foam_record: dict | None) -> dict | None:
         for step in run_manifest.get("executed_steps", [])
         if step.get("check_mesh_report") is not None
     ]
+    solver_reports = [
+        step.get("solver_report")
+        for step in run_manifest.get("executed_steps", [])
+        if step.get("solver_report") is not None
+    ]
     return {
         "status": foam_record.get("solver_status"),
         "reason": foam_record.get("solver_reason"),
         "foam_candidate_id": foam_record.get("foam_candidate_id"),
         "high_fidelity_used": run_manifest.get("high_fidelity_used"),
         "check_mesh": check_mesh_reports[-1] if check_mesh_reports else None,
+        "solver_report": solver_reports[-1] if solver_reports else None,
     }
 
 
