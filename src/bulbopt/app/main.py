@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -89,6 +90,11 @@ def run_cli(argv: list[str]) -> int:
         default="surrogate",
     )
     evidence_parser.add_argument("--limit", type=int, default=10)
+    evidence_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of text",
+    )
 
     if not argv:
         parser.print_help(sys.stderr)
@@ -217,6 +223,21 @@ def run_cli(argv: list[str]) -> int:
             hull_fingerprint=hull_fingerprint,
             settings_hash=settings_hash,
         )
+        rows = evidence_store.best_candidate_rows(
+            int(namespace.limit),
+            hull_fingerprint=hull_fingerprint,
+            settings_hash=settings_hash,
+        )
+        payload = {
+            "hull_fingerprint": hull_fingerprint,
+            "settings_hash": settings_hash,
+            "backend": str(namespace.backend),
+            "summary": summary,
+            "rows": rows,
+        }
+        if namespace.json:
+            print(json.dumps(payload, sort_keys=True))
+            return 0
         print(
             "Evidence eligibility: "
             f"candidate_rows={summary['candidate_rows']} "
@@ -225,11 +246,6 @@ def run_cli(argv: list[str]) -> int:
             f"settings_mismatch={summary['settings_mismatch']} "
             f"not_engineering_valid={summary['not_engineering_valid']} "
             f"not_improving={summary['not_improving']}"
-        )
-        rows = evidence_store.best_candidate_rows(
-            int(namespace.limit),
-            hull_fingerprint=hull_fingerprint,
-            settings_hash=settings_hash,
         )
         if not rows:
             print("No compatible CFD evidence found")
