@@ -94,6 +94,14 @@ def _build_baseline(
 ) -> tuple[trimesh.Trimesh, dict]:
     """Run ``prepare_geometry`` on the case dir and return (mesh, region)."""
     case_dir.mkdir(parents=True, exist_ok=True)
+    # StubGeometryAdapter.prepare_geometry writes to <case_dir>/input/,
+    # <case_dir>/working/repaired/, and reads/writes <case_dir>/artifacts_index.json.
+    # None of those are created by the adapter itself. Set up the skeleton first.
+    (case_dir / "input").mkdir(parents=True, exist_ok=True)
+    (case_dir / "working" / "repaired").mkdir(parents=True, exist_ok=True)
+    artifacts_path = case_dir / "artifacts_index.json"
+    if not artifacts_path.exists():
+        artifacts_path.write_text("{}", encoding="utf-8")
     geometry = StubGeometryAdapter()
     analysis = geometry.prepare_geometry(case_dir, source_stl)
     repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
