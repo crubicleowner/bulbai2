@@ -136,6 +136,14 @@ class NightOptimizationConfig:
     gp_surrogate_min_history: int = 20
     # L1: override the history path (default ``~/.bulbopt/history.jsonl``)
     history_path: Path | None = None
+    # Spec 2026-04-22 §8: parallel mid-gate fan-out. ``1`` (default) keeps
+    # the cascade fully sequential and bit-identical to the legacy path.
+    # Setting this to e.g. 4 dispatches each generation's mid-gate
+    # evaluation across 4 worker processes — population × generations
+    # × seconds_per_eval ÷ workers. Falls back to sequential when the
+    # wrapped evaluator is not picklable (typical for closures over
+    # trimesh meshes).
+    parallel_workers: int = 1
 
 
 def run_night_optimization(
@@ -357,6 +365,7 @@ def run_night_optimization(
             warm_start_vectors=warm_start_vectors,
             n_objectives=3,
             on_generation_snapshot=generation_writer,
+            parallel_workers=config.parallel_workers,
         )
         result: CascadeResult = cascade.run()
 
