@@ -1429,3 +1429,199 @@ def test_run_night_optimization_transitions_through_new_states(
         CaseStatus.COMPLETED,
         CaseStatus.COMPLETED_WITH_WARNINGS,
     }
+
+
+def _kracht_vector_at_offset(index: int) -> KrachtVector:
+    """Build a deterministic, in-bounds KrachtVector for synthetic history."""
+    return KrachtVector(
+        values={
+            "length_ratio": 0.020 + index * 0.0005,
+            "breadth_ratio": 0.080,
+            "height_ratio": 0.250,
+            "axis_z_ratio": 0.200,
+            "longitudinal_pos": 0.550,
+            "cross_section_c": 0.700,
+            "volume_coef": 0.600,
+            "nose_sharpness": 0.500,
+        }
+    )
+
+
+def _read_mid_gate_routing_entries(case_log_path: Path) -> list[dict]:
+    """Pull every ``mid_gate_routing`` JSONL row out of ``case.log``."""
+    entries: list[dict] = []
+    if not case_log_path.exists():
+        return entries
+    for line in case_log_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("stage") == "mid_gate_routing":
+            entries.append(payload)
+    return entries
+
+
+def _force_simple_foam_planned_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Force the use case to plan ``simple_foam`` as the high-gate backend
+    so history rows tagged ``simple_foam`` are eligible for the GP fit.
+    Mocks both the detector and the OpenFOAM runner so the test stays
+    fast and self-contained.
+    """
+    from bulbopt.application.use_cases import run_night_optimization as use_case_module
+    from bulbopt.infrastructure.adapters import openfoam_runner
+
+    monkeypatch.setattr(use_case_module, "detect_openfoam_available", lambda: True)
+
+    def fake_run(
+        self,
+        case_dir,
+        *,
+        case_manifest=None,
+        execute=False,
+        timeout_seconds=600,
+    ):
+        return {
+            "status": "executed_ok",
+            "is_recoverable": True,
+            "high_fidelity_used": True,
+            "executed_steps": [],
+        }
+
+    monkeypatch.setattr(
+        openfoam_runner.OpenFOAMRunnerAdapter,
+        "run_case",
+        fake_run,
+    )
+
+
+def test_mid_gate_routes_to_gp_when_history_meets_threshold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audit 2026-04-26 follow-up: with >= ``gp_surrogate_min_history``
+    real-CFD history rows the mid-gate must wire the GP surrogate, and the
+    case log must announce that decision so the engineer reading the log
+    can tell the GA is **not** running blind on the analytic proxy."""
+    from bulbopt.optimization.learning.history_store import HistoryStore
+
+    _force_simple_foam_planned_backend(monkeypatch)
+
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    history_path = tmp_path / "history" / "history.jsonl"
+    history_store = HistoryStore(path=history_path)
+    # Seed exactly 12 real-CFD rows tagged as ``simple_foam`` — matches the
+    # threshold so the GP path activates. Cd values vary so the kernel has
+    # signal.
+    for index in range(12):
+        history_store.record(
+            _kracht_vector_at_offset(index),
+            cd=0.40 - index * 0.01,
+            backend="simple_foam",
+        )
+
+    summary = run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-mid-gate-gp",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=4,
+            generations=2,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+            seed=101,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+            gp_surrogate_min_history=12,
+            history_path=history_path,
+        ),
+    )
+
+    case_log_path = (
+        tmp_path / "projects" / summary.case_id / "logs" / "case.log"
+    )
+    routing_entries = _read_mid_gate_routing_entries(case_log_path)
+    assert len(routing_entries) == 1, (
+        f"expected exactly one mid_gate_routing entry, got {routing_entries}"
+    )
+    entry = routing_entries[0]
+    assert entry["status"] == "gp"
+    assert entry["training_points"] >= 12
+    assert entry["threshold"] == 12
+
+
+def test_mid_gate_routes_to_proxy_fallback_when_history_below_threshold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With fewer than ``gp_surrogate_min_history`` real-CFD rows the
+    mid-gate must fall back to the analytic proxy AND the case log must
+    say so loudly — including a ``warning`` field — so an engineer
+    reading the log knows the GA is operating without a real-Cd
+    surrogate."""
+    from bulbopt.optimization.learning.history_store import HistoryStore
+
+    _force_simple_foam_planned_backend(monkeypatch)
+
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    history_path = tmp_path / "history" / "history.jsonl"
+    history_store = HistoryStore(path=history_path)
+    # Seed 5 rows — well below the 12-row threshold. Tagged ``simple_foam``
+    # so they would have been eligible for the GP fit if there were enough.
+    for index in range(5):
+        history_store.record(
+            _kracht_vector_at_offset(index),
+            cd=0.40 - index * 0.01,
+            backend="simple_foam",
+        )
+
+    summary = run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-mid-gate-proxy-fallback",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=4,
+            generations=2,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+            seed=102,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+            gp_surrogate_min_history=12,
+            history_path=history_path,
+        ),
+    )
+
+    case_log_path = (
+        tmp_path / "projects" / summary.case_id / "logs" / "case.log"
+    )
+    routing_entries = _read_mid_gate_routing_entries(case_log_path)
+    assert len(routing_entries) == 1, (
+        f"expected exactly one mid_gate_routing entry, got {routing_entries}"
+    )
+    entry = routing_entries[0]
+    assert entry["status"] == "proxy_fallback_blind"
+    assert entry["threshold"] == 12
+    assert entry["history_size"] == 5
+    assert "warning" in entry and entry["warning"]
+

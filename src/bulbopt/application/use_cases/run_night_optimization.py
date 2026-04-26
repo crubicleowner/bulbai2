@@ -135,7 +135,14 @@ class NightOptimizationConfig:
     random_exploration_ratio: float = 0.5
     # L1: minimum history size before the GP surrogate replaces the
     # analytic mid-gate proxy.
-    gp_surrogate_min_history: int = 20
+    #
+    # Lowered from 20 -> 12 by audit 2026-04-26 follow-up: the DOE bootstrap
+    # produces 30 simpleFoam rows with some failures (~25-28 valid), and a
+    # threshold of 20 left runs blind on the analytic proxy (which is
+    # anti-correlated with real Cd) for too long. 12 rows is enough for a
+    # rough RBF length-scale fit and gets the GP active sooner while the
+    # DOE is still completing.
+    gp_surrogate_min_history: int = 12
     # L1: override the history path (default ``~/.bulbopt/history.jsonl``)
     history_path: Path | None = None
     # Spec 2026-04-22 §8: parallel mid-gate fan-out. ``1`` (default) keeps
@@ -341,6 +348,12 @@ def run_night_optimization(
 
         # L1: wrap the mid-gate with a GP prediction once the history
         # crosses the threshold; otherwise keep the analytic proxy.
+        #
+        # Audit 2026-04-26 follow-up: also emit a ``mid_gate_routing`` log
+        # entry so an engineer reading ``case.log`` can tell at a glance
+        # which mid-gate is in play. The proxy fallback is anti-correlated
+        # with real Cd in some regions, so the GA is "running blind" when
+        # it fires — the warning makes that obvious.
         if len(surrogate_training_rows) >= config.gp_surrogate_min_history:
             surrogate = GPSurrogate()
             surrogate.fit(
@@ -353,8 +366,30 @@ def run_night_optimization(
                 status="trained",
                 extra={"training_points": len(surrogate_training_rows)},
             )
+            case_logger.log_stage(
+                stage="mid_gate_routing",
+                status="gp",
+                extra={
+                    "training_points": len(history_rows_for_gp),
+                    "threshold": config.gp_surrogate_min_history,
+                },
+            )
         else:
             mid_evaluator = base_mid_evaluator
+            case_logger.log_stage(
+                stage="mid_gate_routing",
+                status="proxy_fallback_blind",
+                extra={
+                    "history_size": len(history_rows_for_gp),
+                    "threshold": config.gp_surrogate_min_history,
+                    "warning": (
+                        "Mid-gate using analytic proxy that may "
+                        "anti-correlate with real Cd. Increase real-CFD "
+                        "history (run scripts/cfd_doe_seed.py) to "
+                        "activate GP."
+                    ),
+                },
+            )
 
         # L4: validity prefilter wraps whichever evaluator we ended up with.
         if config.enable_validity_prefilter:
