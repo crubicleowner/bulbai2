@@ -148,23 +148,78 @@ class NightOptimizationConfig:
     parallel_workers: int = 1
 
 
+@dataclass(slots=True)
+class ResumeState:
+    """Internal state passed between ``resume_night_optimization`` and
+    ``run_night_optimization`` (spec 2026-04-22 §10.3).
+
+    ``starting_generation`` is the on-disk index of the FIRST generation
+    the resumed run should produce (i.e. the killed run's last completed
+    generation index + 1). ``population`` is the list of vectors that
+    should seed NSGA-II's gen 0 — typically the population from the last
+    snapshot the killed run wrote.
+
+    ``case`` and ``case_dir`` are the already-loaded case to mutate (no
+    new ``create_case`` call is performed when this state is supplied).
+    The geometry is also expected to already be on disk under
+    ``case_dir/working/repaired/``.
+    """
+
+    starting_generation: int
+    population: List[KrachtVector]
+    case: object
+    case_dir: Path
+
+
 def run_night_optimization(
     *,
     project_root: Path,
     command: CreateCaseCommand,
     config: NightOptimizationConfig | None = None,
     high_fidelity_evaluator: HighFidelityEvaluator | None = None,
+    _resume_state: ResumeState | None = None,
 ) -> CaseSummary:
+    """Spec 2026-04-22 §11. Public signature is ``project_root, command,
+    config, high_fidelity_evaluator``. ``_resume_state`` is an internal
+    keyword for use by :func:`resume_night_optimization` only — it must
+    NOT be invoked by external callers, hence the leading underscore.
+    When supplied:
+
+    * ``create_case`` is skipped (the case already exists).
+    * ``prepare_geometry`` is skipped (the repaired mesh is already on
+      disk; re-running would mutate it).
+    * NSGA-II is seeded with ``_resume_state.population`` and the
+      generation snapshot writer is offset by
+      ``_resume_state.starting_generation`` so new ``gen-NN/`` directories
+      pick up where the killed run left off.
+    * ``convergence.csv`` is appended to instead of overwritten.
+    """
     config = config or NightOptimizationConfig()
     repository = FilesystemProjectRepository(root_dir=project_root)
-    case = create_case(command=command, repository=repository)
-    case_dir = repository.case_dir(case.case_id)
+
+    if _resume_state is None:
+        case = create_case(command=command, repository=repository)
+        case_dir = repository.case_dir(case.case_id)
+    else:
+        case = _resume_state.case  # type: ignore[assignment]
+        case_dir = _resume_state.case_dir
+
+    is_resume = _resume_state is not None
+    generation_offset = (
+        int(_resume_state.starting_generation) if _resume_state is not None else 0
+    )
+
     json_store = JsonStore()
     case_logger = CaseLogger(case_dir / "logs" / "case.log")
     case_logger.log_stage(
         stage="pipeline",
-        status="started",
-        extra={"case_id": case.case_id, "mode": "night_optimization"},
+        status="resumed" if is_resume else "started",
+        extra={
+            "case_id": case.case_id,
+            "mode": "night_optimization",
+            "resumed": is_resume,
+            "starting_generation": generation_offset,
+        },
     )
 
     # Spec 2026-04-22 §10.1: enter the dedicated night state once the case
@@ -181,11 +236,23 @@ def run_night_optimization(
     convergence_rows: list[dict] = []
 
     try:
-        # Stage 1: prepare base geometry.
-        case_logger.log_stage(stage="prepare_geometry", status="started")
-        geometry = StubGeometryAdapter()
-        geometry_analysis = geometry.prepare_geometry(case_dir, Path(command.source_path))
-        case_logger.log_stage(stage="prepare_geometry", status="completed")
+        # Stage 1: prepare base geometry — but only on a fresh run. The
+        # repaired mesh and analysis are already on disk for resume, and
+        # re-running ``prepare_geometry`` would mutate the repaired STL.
+        if is_resume:
+            case_logger.log_stage(
+                stage="prepare_geometry",
+                status="skipped",
+                extra={"reason": "resumed"},
+            )
+            geometry_analysis = json_store.read(
+                case_dir / "working" / "repaired" / "geometry_analysis.json"
+            )
+        else:
+            case_logger.log_stage(stage="prepare_geometry", status="started")
+            geometry = StubGeometryAdapter()
+            geometry_analysis = geometry.prepare_geometry(case_dir, Path(command.source_path))
+            case_logger.log_stage(stage="prepare_geometry", status="completed")
 
         # Stage 2: cascade.
         case_logger.log_stage(stage="night_optimization", status="started")
@@ -354,6 +421,17 @@ def run_night_optimization(
             case=case,
             convergence_rows=convergence_rows,
             case_logger=case_logger,
+            generation_offset=generation_offset,
+        )
+        # Spec 2026-04-22 §10.3: when resuming, NSGA-II is seeded with the
+        # exact population from the last snapshot the killed run wrote.
+        # This bypasses the history-driven warm-start logic above so the
+        # resume behaviour is deterministic and reproduces the trajectory
+        # of the original run.
+        cascade_warm_start_vectors = (
+            list(_resume_state.population)
+            if _resume_state is not None
+            else warm_start_vectors
         )
         cascade = CascadeStrategy(
             space=space,
@@ -364,7 +442,7 @@ def run_night_optimization(
             mid_gate=mid_gate,
             high_gate=high_gate,
             seed=config.seed,
-            warm_start_vectors=warm_start_vectors,
+            warm_start_vectors=cascade_warm_start_vectors,
             n_objectives=3,
             on_generation_snapshot=generation_writer,
             parallel_workers=config.parallel_workers,
@@ -374,11 +452,13 @@ def run_night_optimization(
         # Persist the run-level convergence series. Empty when no
         # generation snapshot fired (e.g. the test harness skipped the
         # callback) — but the file still gets a header row so consumers
-        # don't have to special-case missing files.
+        # don't have to special-case missing files. Append mode (resume)
+        # preserves the killed run's earlier rows above the new ones.
         _write_convergence_csv(
             case_dir=case_dir,
             rows=convergence_rows,
             case_logger=case_logger,
+            append=is_resume,
         )
 
         if _should_run_baseline_cfd(
@@ -600,6 +680,12 @@ def run_night_optimization(
                 "gate_timings": scheduler.gate_timings(),
                 "engineering_summary": engineering_summary,
                 "engineering_outcome": engineering_outcome,
+                # Spec 2026-04-22 §10.3: distinguish a fresh run from a
+                # resumed one so downstream tooling (and tests) can
+                # correlate the on-disk gen-NN sequence with how it was
+                # produced.
+                "resumed": is_resume,
+                "starting_generation": int(generation_offset),
             }
         }
         repository.save_case(case)
@@ -1532,6 +1618,7 @@ def _make_generation_writer(
     case,
     convergence_rows: list[dict],
     case_logger: CaseLogger,
+    generation_offset: int = 0,
 ):
     """Return a callable that persists one ``gen-NN/`` directory per call.
 
@@ -1550,11 +1637,21 @@ def _make_generation_writer(
     ``convergence.csv`` is flushed after the cascade exits, not per
     generation, so a half-written CSV doesn't outlive a crashed run).
 
+    The optional ``generation_offset`` shifts NSGA-II's internal 0-based
+    generation index when persisting (spec 2026-04-22 §10.3 — resume).
+    Used by ``resume_night_optimization``: the resumed cascade always
+    starts at NSGA-II generation 0 internally, but if the killed run
+    had already written ``gen-04`` we want the new snapshots on disk
+    as ``gen-05`` and onwards. Existing snapshots from the prior run
+    are NOT overwritten because the writer never targets indices below
+    the offset.
+
     Failures inside the writer are logged and swallowed: a bad disk
     write must NOT abort the optimisation. The rest of the run keeps
     going and we still get the final outputs.
     """
     generations_root = case_dir / "working" / "night_optimization" / "generations"
+    offset = int(generation_offset)
 
     def write_generation(
         generation_index: int,
@@ -1563,11 +1660,12 @@ def _make_generation_writer(
         pareto: List,
     ) -> None:
         try:
-            gen_dir = generations_root / f"gen-{int(generation_index):02d}"
+            on_disk_index = int(generation_index) + offset
+            gen_dir = generations_root / f"gen-{on_disk_index:02d}"
             gen_dir.mkdir(parents=True, exist_ok=True)
 
             population_payload = {
-                "generation": int(generation_index),
+                "generation": int(on_disk_index),
                 "individuals": [
                     {
                         "vector": [
@@ -1589,7 +1687,7 @@ def _make_generation_writer(
             )
 
             pareto_payload = {
-                "generation": int(generation_index),
+                "generation": int(on_disk_index),
                 "candidates": [
                     {
                         "vector": [
@@ -1614,7 +1712,7 @@ def _make_generation_writer(
 
             convergence_rows.append(
                 _convergence_row(
-                    generation_index=int(generation_index),
+                    generation_index=int(on_disk_index),
                     objectives=objectives,
                 )
             )
@@ -1684,12 +1782,19 @@ def _write_convergence_csv(
     case_dir: Path,
     rows: Sequence[dict],
     case_logger: CaseLogger,
+    append: bool = False,
 ) -> None:
     """Write ``working/night_optimization/convergence.csv``.
 
     Always writes a header row so downstream tooling doesn't trip on a
     missing file. Failures (disk full, etc.) are logged and swallowed —
     the rest of the night-run should still finalise.
+
+    When ``append=True`` (used by ``resume_night_optimization``) and the
+    target file already exists with a matching header, the new rows are
+    appended after the existing ones instead of overwriting the file.
+    Mismatched/missing header → behave like a fresh write so a corrupt
+    older CSV does not survive a resume.
     """
     night_dir = case_dir / "working" / "night_optimization"
     night_dir.mkdir(parents=True, exist_ok=True)
@@ -1702,8 +1807,9 @@ def _write_convergence_csv(
         "best_obj2",
         "mean_obj0",
     ]
+    header = ",".join(columns)
     try:
-        lines: list[str] = [",".join(columns)]
+        new_data_lines: list[str] = []
         for row in rows:
             cells: list[str] = []
             for column in columns:
@@ -1714,7 +1820,19 @@ def _write_convergence_csv(
                     cells.append(repr(value))
                 else:
                     cells.append(str(value))
-            lines.append(",".join(cells))
+            new_data_lines.append(",".join(cells))
+
+        if append and path.exists():
+            existing = path.read_text(encoding="utf-8")
+            existing_lines = [
+                line for line in existing.splitlines() if line.strip()
+            ]
+            if existing_lines and existing_lines[0] == header:
+                merged = existing_lines + new_data_lines
+                path.write_text("\n".join(merged) + "\n", encoding="utf-8")
+                return
+
+        lines = [header, *new_data_lines]
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except Exception as exc:
         case_logger.log_stage(

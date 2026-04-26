@@ -33,9 +33,13 @@ def run_cli(argv: list[str]) -> int:
     """Headless entrypoint for overnight/SSH/CI runs (spec §1).
 
     Subcommands:
-      * ``run``    -- execute a new vertical slice case
-      * ``list``   -- list persisted cases
-      * ``resume`` -- continue a recoverable case from its checkpoints
+      * ``run``           -- execute a new vertical slice case
+      * ``list``          -- list persisted cases
+      * ``resume``        -- continue a recoverable case from its checkpoints
+      * ``night-run``     -- run multi-objective NSGA-II night optimisation
+      * ``resume-night``  -- resume a killed night-run from the latest
+                             per-generation snapshot (spec 2026-04-22 §10.3)
+      * ``evidence``      -- list compatible historical CFD evidence rows
     """
 
     parser = argparse.ArgumentParser(
@@ -77,6 +81,21 @@ def run_cli(argv: list[str]) -> int:
     night_parser.add_argument("--generations", type=int, default=20)
     night_parser.add_argument("--high-fidelity-budget", type=int, default=10)
     night_parser.add_argument("--seed", type=int, default=None)
+
+    resume_night_parser = subparsers.add_parser(
+        "resume-night",
+        help=(
+            "Resume a killed night-run from the latest per-generation snapshot "
+            "(spec 2026-04-22 §10.3)"
+        ),
+    )
+    resume_night_parser.add_argument("--project", required=True)
+    resume_night_parser.add_argument("--case", required=True)
+    resume_night_parser.add_argument("--budget-hours", type=float, default=8.0)
+    resume_night_parser.add_argument("--population", type=int, default=50)
+    resume_night_parser.add_argument("--generations", type=int, default=20)
+    resume_night_parser.add_argument("--high-fidelity-budget", type=int, default=10)
+    resume_night_parser.add_argument("--seed", type=int, default=None)
 
     evidence_parser = subparsers.add_parser(
         "evidence",
@@ -204,6 +223,43 @@ def run_cli(argv: list[str]) -> int:
             )
         except Exception as error:
             print(f"Night run failed: {error}", file=sys.stderr)
+            return 1
+        print(
+            f"{summary.status}: case_id={summary.case_id} "
+            f"winner={summary.best_candidate_id or 'n/a'}"
+        )
+        return 0
+
+    if namespace.command == "resume-night":
+        # Spec 2026-04-22 §10.3: resume a killed night-run from the
+        # latest per-generation snapshot. The CLI mirrors ``night-run``'s
+        # population/generations/budget knobs because the stored case
+        # only persists the original CreateCaseCommand, not the
+        # optimisation config. Pass them again here to control the
+        # remaining work.
+        from bulbopt.application.use_cases.resume_night_optimization import (
+            resume_night_optimization,
+        )
+        from bulbopt.application.use_cases.run_night_optimization import (
+            NightOptimizationConfig,
+        )
+
+        project_root = Path(namespace.project)
+        config = NightOptimizationConfig(
+            population=int(namespace.population),
+            generations=int(namespace.generations),
+            high_fidelity_budget=int(namespace.high_fidelity_budget),
+            runtime_budget_hours=float(namespace.budget_hours),
+            seed=namespace.seed,
+        )
+        try:
+            summary = resume_night_optimization(
+                project_root=project_root,
+                case_id=namespace.case,
+                config=config,
+            )
+        except Exception as error:
+            print(f"Night resume failed: {error}", file=sys.stderr)
             return 1
         print(
             f"{summary.status}: case_id={summary.case_id} "

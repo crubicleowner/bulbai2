@@ -163,6 +163,89 @@ def test_run_cli_night_run_command_writes_pareto_artifacts(
     assert pareto.exists()
 
 
+def test_run_cli_resume_night_command_continues_from_latest_snapshot(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Spec 2026-04-22 §10.3: ``bulbopt resume-night --case <id>`` should
+    pick up where a killed run left off and finish without overwriting
+    the prior gen-NN snapshots."""
+    source_path = tmp_path / "demo.stl"
+    _write_valid_stl(source_path)
+    project_root = tmp_path / "projects"
+
+    # Seed a 2-generation case via the night-run subcommand.
+    seed_exit = run_cli(
+        [
+            "night-run",
+            "--source", str(source_path),
+            "--project", str(project_root),
+            "--case-name", "night-resume-cli",
+            "--budget-hours", "0.01",
+            "--population", "4",
+            "--generations", "2",
+            "--high-fidelity-budget", "1",
+            "--seed", "11",
+        ]
+    )
+    assert seed_exit == 0
+    capsys.readouterr()
+
+    cases = [
+        p for p in project_root.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    ]
+    assert len(cases) == 1
+    case_dir = cases[0]
+    case_id = case_dir.name
+
+    # Re-mark the case as recoverable so the resume path actually
+    # continues (the seeded run terminated normally).
+    from bulbopt.domain.core.models import CaseStatus
+    from bulbopt.storage.project_repository.filesystem_repository import (
+        FilesystemProjectRepository,
+    )
+
+    repository = FilesystemProjectRepository(root_dir=project_root)
+    case = repository.load_case(case_id)
+    case.status = CaseStatus.RUNNING_NIGHT_OPTIMIZATION
+    case.is_recoverable = True
+    repository.save_case(case)
+
+    pre_gens = sorted(
+        p.name
+        for p in (case_dir / "working" / "night_optimization" / "generations").iterdir()
+        if p.is_dir()
+    )
+    assert pre_gens == ["gen-00", "gen-01"]
+
+    # Resume out to 4 total generations -> expect gen-02 and gen-03.
+    resume_exit = run_cli(
+        [
+            "resume-night",
+            "--project", str(project_root),
+            "--case", case_id,
+            "--budget-hours", "0.01",
+            "--population", "4",
+            "--generations", "4",
+            "--high-fidelity-budget", "1",
+            "--seed", "11",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert resume_exit == 0
+    assert case_id in captured.out
+
+    post_gens = sorted(
+        p.name
+        for p in (case_dir / "working" / "night_optimization" / "generations").iterdir()
+        if p.is_dir()
+    )
+    # Original generations are still on disk; new ones were appended.
+    for gen in ("gen-00", "gen-01", "gen-02", "gen-03"):
+        assert gen in post_gens
+    assert "gen-04" not in post_gens
+
+
 def test_run_cli_evidence_command_lists_compatible_cfd_rows(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
