@@ -103,3 +103,42 @@ def test_region_with_no_faces_is_passthrough():
     out = subdivide_region(mesh, bad_region, min_triangles=100, max_iterations=3)
     assert len(out.faces) == len(mesh.faces)
     assert out.is_watertight
+
+
+def test_subdivision_dedup_tolerance_scales_with_edge_length():
+    """Bug #7: the midpoint-dedup uses ``dists[min_idx] <= 1e-18`` (squared
+    distance, so 1e-9 m linear). On a 100 m-class hull the analytic
+    midpoint can differ from trimesh's by ~1e-7 m due to internal float
+    arithmetic — the check rejects valid midpoints, leaves T-junctions,
+    output mesh fails ``is_watertight``.
+
+    After the fix, the tolerance scales with the mesh's edge length so
+    coarse meshes at any scale (small bow STLs through 300 m container
+    ships) remain watertight after ``subdivide_region``.
+    """
+    # Small mesh (10 m extent) and large mesh (10000 m extent).
+    small = trimesh.creation.box(extents=(10.0, 4.0, 3.0))
+    large = trimesh.creation.box(extents=(10000.0, 4000.0, 3000.0))
+
+    for mesh, label in ((small, "10 m"), (large, "10000 m")):
+        primary = int(np.argmax(mesh.extents))
+        axis_max = float(mesh.vertices[:, primary].max())
+        axis_min = float(mesh.vertices[:, primary].mean())
+        region = {
+            "axis_index": primary,
+            "axis_min": axis_min,
+            "axis_max": axis_max,
+        }
+        out = subdivide_region(mesh, region, min_triangles=200, max_iterations=3)
+        assert out.is_watertight, (
+            f"{label} mesh lost watertightness after subdivision — Bug #7 "
+            f"(midpoint-dedup tolerance not scale-aware)"
+        )
+
+        # Repeated subdivision must remain idempotent: once the threshold
+        # is met, the function returns the input unchanged.
+        out2 = subdivide_region(out, region, min_triangles=1, max_iterations=3)
+        assert len(out2.faces) == len(out.faces), (
+            f"{label} subdivision is not idempotent under repeated calls"
+        )
+        assert out2.is_watertight

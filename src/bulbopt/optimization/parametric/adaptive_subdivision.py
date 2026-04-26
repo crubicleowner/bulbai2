@@ -126,6 +126,26 @@ def _subdivide_with_tjunction_repair(
     n_non_region = len(non_region_faces)
     subdivided_region_faces = new_faces[n_non_region:]
 
+    # Bug #7 (audit 2026-04-26): the midpoint-dedup tolerance must scale
+    # with the mesh's edge length, not be a fixed 1e-18 squared distance.
+    # On a 100 m hull trimesh's internal subdivide can place the midpoint
+    # ~1e-7 m away from the analytic ``0.5 * (va + vb)`` due to float
+    # accumulation; a fixed 1e-9 m tolerance rejects valid midpoints,
+    # leaves T-junctions, and breaks watertightness. Use a relative
+    # tolerance derived from the region's mean edge length so the dedup
+    # works robustly on 1 m boats through 300 m container ships.
+    region_edge_lengths = np.linalg.norm(
+        vertices[region_faces[:, [1, 2, 0]]] - vertices[region_faces],
+        axis=2,
+    )
+    mean_edge_len = float(region_edge_lengths.mean()) if region_edge_lengths.size else 0.0
+    # 1e-6 of the edge length is far tighter than any legitimate spatial
+    # separation between distinct midpoints (their nearest possible pair
+    # is ~half an edge apart) but loose enough to absorb float ULP noise
+    # at any hull scale. Floor with 1e-18 to preserve the historical
+    # behaviour on degenerate or fully-collapsed inputs.
+    tol_squared = max((1e-6 * mean_edge_len) ** 2, 1e-18)
+
     # Map each unique region edge → its new midpoint vertex index.
     edge_to_midpoint: Dict[Tuple[int, int], int] = {}
     for face in region_faces:
@@ -144,7 +164,7 @@ def _subdivide_with_tjunction_repair(
             diffs = tail - mid_point
             dists = np.einsum("ij,ij->i", diffs, diffs)
             min_idx = int(np.argmin(dists))
-            if dists[min_idx] <= 1e-18:
+            if dists[min_idx] <= tol_squared:
                 edge_to_midpoint[key] = n_original_vertices + min_idx
 
     # Boundary edges: present in both region and non-region faces.

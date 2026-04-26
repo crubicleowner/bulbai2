@@ -506,6 +506,44 @@ def _bernstein(degree: int, index: int, t: np.ndarray) -> np.ndarray:
     return coeff * (t ** index) * ((1.0 - t) ** (degree - index))
 
 
+# Bug #6 (audit 2026-04-26): minimum welded vertex count below which the
+# Taubin pass is skipped. Below ~60 unique nodes the welded Laplacian
+# graph picks up degree-1 boundary nodes whose noisy steps overwhelm the
+# smoothstep taper, producing non-manifold output. Skipping smoothing
+# leaves the mesh slightly more polygonal but keeps it watertight, which
+# matters for downstream snappyHexMesh. See bug context in 2026-04-26
+# audit memo.
+_TAUBIN_MIN_UNIQUE_VERTICES = 60
+
+# Bug #6: same idea, but on the participating (in-region) raw-vertex
+# count. A bulb region with fewer than this many vertices is too sparse
+# for Taubin to behave well even when the rest of the mesh is dense.
+_TAUBIN_MIN_PARTICIPATING_VERTICES = 30
+
+
+def _adaptive_weld_decimals(mesh: trimesh.Trimesh) -> int:
+    """Pick the ``np.round(decimals=...)`` precision for position welding
+    based on the mesh's bounding-box diagonal.
+
+    Bug #8 (audit 2026-04-26): a fixed ``decimals=6`` welds positions to
+    1 µm — fine for meter-scale STLs (1 µm ≪ float32 ULP at unit scale)
+    but useless for STLs exported in millimetres (1 µm = 1 nm in mesh
+    units, well below float32 precision so coincident vertices stay
+    unwelded). The adaptive tolerance is ``extent_diag * 1e-9`` so the
+    weld remains a tiny fraction of the hull no matter the unit.
+
+    The formula clamps ``decimals`` to never go *coarser* than 6 — that
+    keeps backward compatibility on the 100 m baseline hull (extent_diag
+    ≈ 247 m → tol ≈ 2.5e-7 → decimals ≈ 6).
+    """
+    extent_diag = float(np.linalg.norm(mesh.extents))
+    # Floor on the absolute tolerance to avoid blowing up ``decimals`` on
+    # a degenerate zero-extent mesh. 1e-12 is safely above float64 ULP
+    # at coordinates of order 1.
+    tol = max(extent_diag * 1e-9, 1e-12)
+    return max(int(-np.log10(tol)), 6)
+
+
 def _apply_taubin_to_region(
     mesh: trimesh.Trimesh,
     *,
@@ -534,11 +572,18 @@ def _apply_taubin_to_region(
     on position-welded vertices rather than raw index-per-face vertices.
     STL loaders typically produce 3 unique vertices per face (no index
     sharing, degree-2 graph), which used to make Taubin collapse the
-    mesh by -99% volume. Welding by position (6-decimal quantisation)
-    recovers the true surface topology; the welded Laplacian is applied
-    per unique position and then scattered back to the original vertex
-    array, so the mesh's topology (face indices, vertex count) is
-    preserved bit-identical.
+    mesh by -99% volume. Welding by position (audit 2026-04-26 Bug #8:
+    quantisation precision is now adaptive — ``_adaptive_weld_decimals``
+    derives it from the mesh's bounding-box diagonal so mm-scale STLs
+    weld correctly too).
+
+    Audit 2026-04-26 Bug #6: skip Taubin entirely when the welded mesh
+    or the participating region is too small. On <60 unique nodes the
+    welded graph has too many degree-1 boundary nodes; on <30
+    participating vertices the smoothstep taper has nothing meaningful
+    to clamp. In both cases Taubin can break watertightness, and a
+    slightly polygonal-but-watertight mesh is worth far more than a
+    smoothed-but-broken one.
 
     Implementation is fully vectorised: we build a sparse CSR Laplacian
     once (edges derived from faces via numpy, no Python loops) and then
@@ -553,16 +598,31 @@ def _apply_taubin_to_region(
     if n == 0 or iterations <= 0:
         return
 
+    # ---- Bug #6: small-region guard --------------------------------------
+    #
+    # Count raw participating vertices first — cheap, and a hard bypass
+    # when the bulb region is sparse.
+    raw_axis_pre = vertices[:, primary_axis]
+    n_participating = int(np.count_nonzero(raw_axis_pre >= blend_start))
+    if n_participating < _TAUBIN_MIN_PARTICIPATING_VERTICES:
+        return
+
     # ---- F1: weld coincident vertices by position ------------------------
     #
-    # Rounding to 6 decimals matches trimesh.grouping.merge_vertices_hash.
+    # Bug #8: ``decimals`` is now adaptive to the hull scale.
     # ``inverse`` is a length-n array: inverse[k] = the unique-position
     # index that vertices[k] belongs to. Duplicated STL vertices collapse
     # onto a single node in the welded graph so Taubin operates on the
     # proper connected mesh topology.
-    rounded = np.round(vertices, decimals=6)
+    decimals = _adaptive_weld_decimals(mesh)
+    rounded = np.round(vertices, decimals=decimals)
     unique_positions, inverse = np.unique(rounded, axis=0, return_inverse=True)
     n_unique = int(unique_positions.shape[0])
+
+    # Bug #6: second guard — welded graph must have enough nodes for the
+    # Laplacian to behave well. Below the threshold we skip smoothing.
+    if n_unique < _TAUBIN_MIN_UNIQUE_VERTICES:
+        return
 
     # Welded face indices: each face's three vertex indices map onto the
     # unique-position space.

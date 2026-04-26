@@ -664,3 +664,143 @@ def test_mirror_symmetry_acts_on_correct_axis() -> None:
         f"Y-extent (draft) changed during port-starboard symmetry pass: "
         f"{y_extent_before:.6f} → {y_extent_after:.6f} — this is the audit bug"
     )
+
+
+# ---- Bug #6 + Bug #8 regression tests -------------------------------------
+#
+# Audit 2026-04-26: two robustness defects in the post-FFD Taubin smoother:
+#
+#   #6  When the bulb region has very few participating vertices (≲30), the
+#       welded Laplacian is built on a graph with degree-1 boundary nodes.
+#       Taubin's noise then propagates past the smoothstep taper and
+#       produces non-manifold (non-watertight) output. Fix: skip Taubin
+#       entirely when n_unique < 60 OR len(participating) < 30.
+#
+#   #8  ``np.round(decimals=6)`` welds positions to 1e-6 — fine for meters
+#       but well below float precision for mm-scale STLs. Fix: derive an
+#       adaptive ``decimals`` from the mesh's bounding-box diagonal so
+#       coincident vertices are welded at any hull scale.
+
+
+def _tiny_bulb_region_mesh() -> trimesh.Trimesh:
+    """Subdivisions=1 icosphere has 42 unique vertices and only ~13 of
+    them sit in a 25 % bulb region. That's well below the Bug #6 guard
+    thresholds, so the Taubin pass must be skipped on this mesh."""
+    mesh = trimesh.creation.icosphere(subdivisions=1, radius=1.0)
+    mesh.apply_scale([2.0, 0.75, 0.5])
+    return mesh
+
+
+def test_taubin_guard_skips_when_region_too_small() -> None:
+    """Bug #6: a tight bulb region (<30 participating vertices and/or <60
+    welded mesh nodes) used to feed an ill-conditioned graph into Taubin
+    and could break watertightness. After the guard, smoothing is
+    bypassed but the FFD displacement still applies — the mesh stays
+    watertight, just slightly more polygonal."""
+    mesh = _tiny_bulb_region_mesh()
+    region = _bulb_region_from_mesh(mesh)
+    # Sanity check the test mesh actually exercises the small-region path.
+    primary = region["axis_index"]
+    blend_width = 0.10 * (region["axis_max"] - region["axis_min"])
+    blend_start = region["axis_min"] - blend_width
+    participating = mesh.vertices[:, primary] >= blend_start
+    n_participating = int(participating.sum())
+    n_unique = int(np.unique(np.round(mesh.vertices, decimals=6), axis=0).shape[0])
+    assert n_participating < 30 or n_unique < 60, (
+        f"Test mesh too large to exercise the small-region guard: "
+        f"participating={n_participating}, n_unique={n_unique}"
+    )
+
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.03,
+            "breadth_ratio":    0.12,
+            "height_ratio":     0.4,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.55,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.6,
+            "nose_sharpness":   0.4,
+        }
+    )
+
+    deformer = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=3,
+        adaptive_subdivision=False,
+    )
+    deformed = deformer.deform(mesh, region, vector)
+
+    # Watertightness preserved despite Taubin being skipped.
+    assert deformed.is_watertight, (
+        "Bug #6: small-region guard should keep mesh watertight"
+    )
+
+    # FFD displacement actually applied — bulb-region vertices moved.
+    inside = mesh.vertices[:, primary] >= region["axis_min"]
+    assert inside.any(), "Test mesh has no vertices inside the bulb region"
+    assert not np.allclose(
+        deformed.vertices[inside], mesh.vertices[inside], atol=1e-9
+    ), "Guard should NOT disable FFD; only Taubin smoothing"
+
+    # When Taubin is skipped, the output must equal the no-smoothing output
+    # (i.e. ``post_smoothing_iterations=0``). This pins down that the guard
+    # truly bypassed Taubin rather than just softened it.
+    deformer_no_smooth = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=0,
+        adaptive_subdivision=False,
+    )
+    no_smooth = deformer_no_smooth.deform(mesh, region, vector)
+    np.testing.assert_array_almost_equal(
+        deformed.vertices, no_smooth.vertices, decimal=12,
+    )
+
+
+def test_taubin_welding_tolerance_scales_with_mesh_size() -> None:
+    """Bug #8: ``np.round(decimals=6)`` is fine on meter-scale hulls but
+    fails to weld coincident vertices on mm-scale STLs (1 nm tolerance ≪
+    float ULP). After the fix, both a 1 m and a 10000 m icosphere must
+    produce watertight, non-degenerate output for the same Kracht push,
+    proving the welding works at both scales."""
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.03,
+            "breadth_ratio":    0.12,
+            "height_ratio":     0.4,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.55,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.6,
+            "nose_sharpness":   0.4,
+        }
+    )
+    deformer = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=3,
+        adaptive_subdivision=False,
+    )
+
+    small = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    large = trimesh.creation.icosphere(subdivisions=3, radius=10000.0)
+    small_region = _bulb_region_from_mesh(small)
+    large_region = _bulb_region_from_mesh(large)
+
+    out_small = deformer.deform(small, small_region, vector)
+    out_large = deformer.deform(large, large_region, vector)
+
+    assert out_small.is_watertight, "1 m icosphere lost watertightness"
+    assert out_large.is_watertight, "10000 m icosphere lost watertightness"
+
+    # Volumes must scale proportionally to (10000/1)**3 — within 5 %.
+    ratio = abs(out_large.volume) / abs(out_small.volume)
+    expected = 10000.0 ** 3
+    drift = abs(ratio - expected) / expected
+    assert drift < 0.05, (
+        f"Volume ratio {ratio:.3e} drifted {drift*100:.2f}% from expected "
+        f"{expected:.3e}: welding likely failed at one of the scales"
+    )
+
+    # Neither output should be degenerate (volume not collapsed).
+    assert abs(out_small.volume) > 0.5 * abs(small.volume)
+    assert abs(out_large.volume) > 0.5 * abs(large.volume)
