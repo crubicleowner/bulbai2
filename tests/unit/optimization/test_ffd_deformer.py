@@ -490,3 +490,177 @@ def test_ffd_amplitude_clamp_prevents_triangle_inversion() -> None:
         f"FFD clamp failed: {flip_ratio*100:.2f}% of faces flipped "
         f"({int(flipped.sum())}/{len(defo_signs)})"
     )
+
+
+# ---- Beam-axis detection regression tests ---------------------------------
+#
+# Today (audit found 2026-04-26): both ``BulbFFDDeformer`` and
+# ``compute_mesh_quality`` pick the beam axis from the *non-primary* axes
+# using a heuristic (``other_axes[0]`` / ``argmin(extents)``) that is wrong
+# for real ship hulls where the asymmetric draft axis happens to be Y and
+# the symmetric port-starboard beam axis is Z. The fix: detect the beam
+# axis from the actual mesh symmetry — the non-primary axis whose vertex
+# distribution is most centered around zero — and persist it in the region
+# dict so all downstream consumers use the correct axis.
+
+
+def _ship_like_hull_z_beam() -> trimesh.Trimesh:
+    """Synthesise a ship-shaped mesh with primary=X (longest), beam=Z
+    (symmetric ±a around 0) and draft=Y (asymmetric, range [-1, +5]).
+
+    This mirrors the docs/base_hull.stl layout exactly: X is the
+    bow-stern length, Y is the keel-to-deck draft (asymmetric because
+    waterline is well above the bottom), Z is the port-starboard beam
+    (symmetric about the centerline).
+
+    Y has a *larger* extent than Z deliberately — so the old
+    ``argmin(extents)`` mesh-quality heuristic also picks the wrong axis.
+    """
+    # Long, low-aspect box so X is unambiguously the primary axis.
+    mesh = trimesh.creation.box(extents=(20.0, 6.0, 2.0))
+    # Subdivide so the deformer has enough vertices in the bulb region
+    # to exercise the FFD lattice meaningfully.
+    mesh = mesh.subdivide().subdivide().subdivide()
+    # Translate Y by +2 → range [-1, +5] (asymmetric, draft-like).
+    # Z stays in [-1, +1] (symmetric, beam-like).
+    mesh.vertices[:, 1] += 2.0
+    return mesh
+
+
+def _region_with_beam_detection(mesh: trimesh.Trimesh) -> dict:
+    """Build a region dict the same way StubGeometryAdapter does, so the
+    beam_axis detection logic is exercised end-to-end."""
+    from bulbopt.infrastructure.adapters.stub_geometry import StubGeometryAdapter
+    adapter = StubGeometryAdapter()
+    analysis = adapter._build_geometry_analysis(
+        mesh,
+        repaired_path=None,  # type: ignore[arg-type]
+    )
+    return analysis["bulb_region"]
+
+
+def test_beam_axis_picks_z_on_real_ship_hull() -> None:
+    """The repaired-mesh analysis must detect Z as the beam axis when the
+    hull is symmetric in Z and asymmetric in Y, even though both Y and Z
+    are non-primary and Y has slightly smaller extent."""
+    mesh = _ship_like_hull_z_beam()
+    region = _region_with_beam_detection(mesh)
+    assert region["axis_index"] == 0  # primary = X
+    assert region["beam_axis"] == 2, (
+        f"Expected beam_axis=2 (Z, port-starboard) on a Z-symmetric hull, "
+        f"got beam_axis={region['beam_axis']} (this is the audit bug)"
+    )
+    assert region["draft_axis"] == 1
+
+
+def test_breadth_ratio_actually_deforms_beam_direction() -> None:
+    """A high ``breadth_ratio`` Kracht push must grow the Z-extent
+    (port-starboard beam) on a Z-symmetric hull — not the Y-extent (draft).
+    Today this fails because the deformer hard-codes beam=other_axes[0]=Y."""
+    mesh = _ship_like_hull_z_beam()
+    region = _region_with_beam_detection(mesh)
+    # Use the forward 25% of the hull as the bulb region — same fraction
+    # the production code applies in StubGeometryAdapter.
+    axis_max = float(mesh.vertices[:, 0].max())
+    extent = float(mesh.extents[0])
+    region["axis_min"] = axis_max - 0.25 * extent
+    region["axis_max"] = axis_max
+
+    # Vector: only ``breadth_ratio`` is non-neutral. ``nose_sharpness=1.0``
+    # zeroes the corner taper that would otherwise leak into the draft
+    # axis, ``cross_section_c=0.5`` and ``axis_z_ratio=0.25`` are at the
+    # neutral midpoints, and length / height are zero. This isolates
+    # breadth as the only knob actively pushing.
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.0,
+            "breadth_ratio":    0.15,   # strong beam push
+            "height_ratio":     0.0,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.5,
+            "cross_section_c":  0.5,
+            "volume_coef":      0.5,
+            "nose_sharpness":   1.0,
+        }
+    )
+    deformer = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=0,
+        adaptive_subdivision=False,
+    )
+    deformed = deformer.deform(mesh, region, vector)
+
+    before = mesh.extents
+    after = deformed.extents
+    z_growth = (after[2] - before[2]) / max(before[2], 1e-9)
+    y_growth = (after[1] - before[1]) / max(before[1], 1e-9)
+
+    assert z_growth > 0.05, (
+        f"breadth_ratio failed to grow Z-extent: "
+        f"before {before[2]:.4f} → after {after[2]:.4f} (Δ={z_growth*100:.2f}%)"
+    )
+    assert y_growth < 0.01, (
+        f"breadth_ratio leaked into Y (draft) direction: "
+        f"before {before[1]:.4f} → after {after[1]:.4f} (Δ={y_growth*100:.2f}%) "
+        f"— this is the audit bug"
+    )
+
+
+def test_mirror_symmetry_acts_on_correct_axis() -> None:
+    """``force_port_starboard_symmetry=True`` must mirror around Z (the
+    truly symmetric axis) when the region dict carries beam_axis=2, even
+    if a Z-asymmetric Kracht vector is applied. Y-extent must be preserved
+    exactly because the mirror pass shouldn't touch Y."""
+    mesh = _ship_like_hull_z_beam()
+    region = _region_with_beam_detection(mesh)
+    axis_max = float(mesh.vertices[:, 0].max())
+    extent = float(mesh.extents[0])
+    region["axis_min"] = axis_max - 0.25 * extent
+    region["axis_max"] = axis_max
+
+    # Same isolation as the breadth-only test: nose_sharpness=1.0 zeros
+    # the corner taper so we can attribute every Y-extent change purely
+    # to the symmetry pass.
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.0,
+            "breadth_ratio":    0.15,   # asymmetric in Z, but breadth pushes ±Z
+            "height_ratio":     0.0,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.5,
+            "cross_section_c":  0.5,
+            "volume_coef":      0.5,
+            "nose_sharpness":   1.0,
+        }
+    )
+    y_extent_before = float(mesh.extents[1])
+
+    deformer = BulbFFDDeformer(
+        force_port_starboard_symmetry=True,
+        post_smoothing_iterations=0,
+        adaptive_subdivision=False,
+    )
+    deformed = deformer.deform(mesh, region, vector)
+
+    # Z-mirror RMS error: vertices must be symmetric around Z=0 within the
+    # bulb region (small fraction of beam extent).
+    v = np.asarray(deformed.vertices, dtype=float)
+    in_region = v[:, 0] >= region["axis_min"]
+    pts = v[in_region]
+    mirrors = pts.copy()
+    mirrors[:, 2] *= -1.0
+    diff = mirrors[:, None, :] - pts[None, :, :]
+    d = np.linalg.norm(diff, axis=2).min(axis=1)
+    rms = float(np.sqrt(np.mean(d ** 2)))
+    beam_extent = float(deformed.extents[2])
+    assert rms < 1e-3 * beam_extent, (
+        f"Z-mirror RMS={rms:.6f} exceeds 1e-3 of beam extent {beam_extent:.4f} "
+        f"— mirror pass acted on the wrong axis"
+    )
+
+    # Y-extent must be identical to the input (within float noise).
+    y_extent_after = float(deformed.extents[1])
+    assert abs(y_extent_after - y_extent_before) < 1e-6 * y_extent_before, (
+        f"Y-extent (draft) changed during port-starboard symmetry pass: "
+        f"{y_extent_before:.6f} → {y_extent_after:.6f} — this is the audit bug"
+    )

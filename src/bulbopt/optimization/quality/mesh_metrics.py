@@ -47,12 +47,20 @@ def _dihedral_deviation(mesh: trimesh.Trimesh) -> float:
     return deviation / float(np.pi)
 
 
-def _symmetry_error(mesh: trimesh.Trimesh) -> float:
+def _symmetry_error(
+    mesh: trimesh.Trimesh, beam_axis: int | None = None
+) -> float:
     """Vertex-to-mirror RMS distance, normalised by bounding-box diagonal.
 
-    Mirrors the hull about its centreline on the beam axis (the shortest
-    extent axis, matching BulbFFDDeformer's convention for ship hulls)
-    and measures how close each vertex is to its mirrored counterpart.
+    Mirrors the hull about its centreline on the beam axis and measures
+    how close each vertex is to its mirrored counterpart.
+
+    When ``beam_axis`` is ``None`` (default) the function falls back to
+    the legacy ``argmin(extents)`` heuristic — fine for synthetic test
+    meshes where all non-primary axes are centered on zero. Production
+    callers should pass ``beam_axis=region["beam_axis"]`` so the metric
+    measures symmetry around the truly symmetric axis of the hull
+    (audit 2026-04-26).
 
     Returns a non-negative float; 0 means perfectly symmetric.
     """
@@ -63,7 +71,10 @@ def _symmetry_error(mesh: trimesh.Trimesh) -> float:
     if np.any(extents <= 0):
         return 0.0
 
-    beam_axis = int(np.argmin(extents))
+    if beam_axis is None:
+        beam_axis = int(np.argmin(extents))
+    else:
+        beam_axis = int(beam_axis)
     centre = 0.5 * (vertices[:, beam_axis].max() + vertices[:, beam_axis].min())
 
     mirrored = vertices.copy()
@@ -98,15 +109,23 @@ def _watertight_penalty(mesh: trimesh.Trimesh) -> float:
     return WATERTIGHT_PENALTY
 
 
-def compute_mesh_quality(deformed: trimesh.Trimesh) -> float:
+def compute_mesh_quality(
+    deformed: trimesh.Trimesh, beam_axis: int | None = None
+) -> float:
     """Return a composite quality scalar for the deformed mesh.
 
     Lower is better. Non-negative and finite. A broken (non-watertight)
     mesh returns ``>= WATERTIGHT_PENALTY`` so NSGA-II dominates it.
+
+    Pass ``beam_axis`` (typically ``region["beam_axis"]`` from the
+    geometry analysis) so the symmetry sub-metric mirrors around the
+    truly symmetric axis of the hull. The default ``None`` keeps the
+    legacy ``argmin(extents)`` heuristic for callers that don't have a
+    beam axis at hand (e.g. unit tests on icospheres / boxes).
     """
     components = (
         _dihedral_deviation(deformed),
-        _symmetry_error(deformed),
+        _symmetry_error(deformed, beam_axis=beam_axis),
         _watertight_penalty(deformed),
     )
     return float(max(components))

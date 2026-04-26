@@ -103,6 +103,14 @@ class BulbFFDDeformer:
         if axis_max <= axis_min:
             return mesh.copy()
 
+        # Beam (port-starboard, symmetric) and draft (keel-deck, asymmetric)
+        # axes. Audit 2026-04-26: read these from the region dict when
+        # provided so the deformer mirrors around the *actual* symmetric
+        # axis of the hull. Fall back to the legacy heuristic
+        # ``other_axes[0]/[1]`` when the region dict doesn't carry them so
+        # synthetic test meshes (icospheres, boxes) keep working.
+        beam_axis, draft_axis = _resolve_secondary_axes(region, primary_axis)
+
         # Spec 2026-04-23 §4 L5: densify the bulb region before FFD so we
         # always have at least ``adaptive_min_triangles`` tris in the
         # deformation zone. This is a no-op when the input already meets
@@ -150,6 +158,8 @@ class BulbFFDDeformer:
             vector=vector,
             primary_axis=primary_axis,
             box_size=box_size,
+            beam_axis=beam_axis,
+            draft_axis=draft_axis,
         )
 
         deformed_region = self._apply_ffd(
@@ -173,8 +183,6 @@ class BulbFFDDeformer:
         deformed_vertices[participating] = region_vertices + weighted_displacement
 
         if self.force_port_starboard_symmetry:
-            other_axes = [a for a in range(3) if a != primary_axis]
-            beam_axis = other_axes[0]
             # Only symmetrize vertices that actually participate in the
             # deformation — leave the rest of the hull alone so legacy
             # topology is preserved bit-identical.
@@ -206,9 +214,9 @@ class BulbFFDDeformer:
                 iterations=self.post_smoothing_iterations,
             )
             # Re-assert symmetry after smoothing (Laplacian can drift
-            # micro-asymmetries back in). Keep the same subset scope.
+            # micro-asymmetries back in). Keep the same subset scope and
+            # the same resolved beam axis we used for the first pass.
             if self.force_port_starboard_symmetry:
-                beam_axis = [a for a in range(3) if a != primary_axis][0]
                 out.vertices = _enforce_mirror_symmetry_subset(
                     vertices=np.asarray(out.vertices),
                     beam_axis=beam_axis,
@@ -252,6 +260,8 @@ class BulbFFDDeformer:
         vector: KrachtVector,
         primary_axis: int,
         box_size: np.ndarray,
+        beam_axis: int | None = None,
+        draft_axis: int | None = None,
     ) -> np.ndarray:
         """Map an 8-D Kracht sample onto (l, m, n, 3) lattice offsets.
 
@@ -259,81 +269,148 @@ class BulbFFDDeformer:
         contributes to one or two lattice dimensions, and the overall
         magnitude is scaled by the physical ``box_size`` so the deformation
         feels consistent across hulls of different scale.
+
+        ``beam_axis`` and ``draft_axis`` default to the legacy
+        ``other_axes[0]/[1]`` heuristic when not supplied (kept for the
+        synthetic-mesh tests). The deformer's public ``deform`` resolves
+        them from the ``region`` dict before calling this method.
         """
         l_cp, m_cp, n_cp = self.LATTICE_SHAPE
         offsets = np.zeros((l_cp, m_cp, n_cp, 3), dtype=float)
 
         v = vector.values
         axis_primary = primary_axis
-        axes_secondary = [a for a in range(3) if a != primary_axis]
-        beam_axis = axes_secondary[0]
-        draft_axis = axes_secondary[1]
+        if beam_axis is None or draft_axis is None:
+            axes_secondary = [a for a in range(3) if a != primary_axis]
+            if beam_axis is None:
+                beam_axis = axes_secondary[0]
+            if draft_axis is None:
+                draft_axis = axes_secondary[1]
+        beam_axis = int(beam_axis)
+        draft_axis = int(draft_axis)
 
-        # Length: push the forward-most lattice slab along the primary axis
-        # by length_ratio * box_length.
+        # Lattice's 3 spatial dims map 1-to-1 to world axes (dim 0 → world
+        # axis 0, dim 1 → world axis 1, dim 2 → world axis 2). The naming
+        # ``i, j, k`` for lattice indices used to also be aliased to
+        # ``primary, beam, draft`` — that aliasing was correct only when
+        # primary=0, beam=1, draft=2 (the legacy box / icosphere case).
+        # On real ship hulls (audit 2026-04-26) primary=0 but beam=2,
+        # draft=1, so we must dispatch each per-axis loop onto the
+        # *correct* lattice dimension.
+        #
+        # ``axes_dim[w]`` is the lattice dimension that varies along
+        # world axis ``w``. With the current LATTICE_SHAPE convention
+        # (5, 4, 4) it's the identity, but we name it explicitly so the
+        # broadcasts below stay readable.
+        primary_dim = axis_primary  # lattice dim that varies along world primary axis
+        beam_dim = beam_axis
+        draft_dim = draft_axis
+
+        # ---- Length: push forward-most slab along primary axis ----
         length_push = v["length_ratio"] * box_size[axis_primary]
         longitudinal_weight = v["longitudinal_pos"]
-        for i in range(l_cp):
-            # quadratic weight biased by longitudinal_pos toward nose
-            frac = i / max(l_cp - 1, 1)
-            weight = (frac ** 2) * (0.5 + 0.5 * longitudinal_weight)
-            offsets[i, :, :, axis_primary] += weight * length_push
+        prim_n = offsets.shape[primary_dim]
+        prim_frac = np.arange(prim_n) / max(prim_n - 1, 1)
+        prim_weight = (prim_frac ** 2) * (0.5 + 0.5 * longitudinal_weight)
+        # length_weight^1.5 ramp, used by breadth/height blocks below.
+        length_ramp_15 = prim_frac ** 1.5
+        # Reshape so a 1-D ramp along the primary lattice dim broadcasts
+        # over the (l_cp, m_cp, n_cp) offsets array.
+        prim_shape = [1, 1, 1]
+        prim_shape[primary_dim] = prim_n
+        prim_weight_b = prim_weight.reshape(prim_shape)
+        length_ramp_15_b = length_ramp_15.reshape(prim_shape)
+        offsets[..., axis_primary] += prim_weight_b * length_push
 
-        # Breadth: expand middle-height lattice slabs outward in beam
-        # direction by +/- breadth_ratio * B.
+        # ---- Breadth: ± along beam axis, scaled by primary-axis ramp ----
         breadth_push = v["breadth_ratio"] * box_size[beam_axis] * 0.5
-        for i in range(l_cp):
-            frac_i = i / max(l_cp - 1, 1)
-            length_weight = (frac_i ** 1.5)
-            for j in range(m_cp):
-                centred = (j / max(m_cp - 1, 1)) - 0.5
-                # positive on +beam side, negative on -beam side
-                sign = 1.0 if centred > 0 else (-1.0 if centred < 0 else 0.0)
-                # stronger in the middle of the length
-                offsets[i, j, :, beam_axis] += sign * length_weight * breadth_push
+        beam_n = offsets.shape[beam_dim]
+        beam_frac = np.arange(beam_n) / max(beam_n - 1, 1)
+        beam_centred = beam_frac - 0.5
+        beam_sign = np.sign(beam_centred)
+        beam_shape = [1, 1, 1]
+        beam_shape[beam_dim] = beam_n
+        beam_sign_b = beam_sign.reshape(beam_shape)
+        offsets[..., beam_axis] += (
+            beam_sign_b * length_ramp_15_b * breadth_push
+        )
 
-        # Height: stretch lattice vertically by height_ratio * T, biased by
-        # axis_z_ratio (axis offset from baseline).
+        # ---- Height: ± along draft axis, plus uniform draft-axis shift ----
         height_push = v["height_ratio"] * box_size[draft_axis] * 0.5
         axis_z = (v["axis_z_ratio"] - 0.25) * box_size[draft_axis]
-        for i in range(l_cp):
-            frac_i = i / max(l_cp - 1, 1)
-            length_weight = (frac_i ** 1.5)
-            for k in range(n_cp):
-                centred = (k / max(n_cp - 1, 1)) - 0.5
-                sign = 1.0 if centred > 0 else (-1.0 if centred < 0 else 0.0)
-                offsets[i, :, k, draft_axis] += sign * length_weight * height_push
-            # axis shift (whole slab translates vertically)
-            offsets[i, :, :, draft_axis] += length_weight * axis_z
+        draft_n = offsets.shape[draft_dim]
+        draft_frac = np.arange(draft_n) / max(draft_n - 1, 1)
+        draft_centred = draft_frac - 0.5
+        draft_sign = np.sign(draft_centred)
+        draft_shape = [1, 1, 1]
+        draft_shape[draft_dim] = draft_n
+        draft_sign_b = draft_sign.reshape(draft_shape)
+        offsets[..., draft_axis] += (
+            draft_sign_b * length_ramp_15_b * height_push
+        )
+        # Whole slab translates vertically (no draft index dependency)
+        offsets[..., draft_axis] += length_ramp_15_b * axis_z
 
-        # Cross-section shape: pull corners toward circular (c=1) or keep
-        # ellipse (c=0.25) by blending diagonal lattice points.
+        # ---- Cross-section shape: corner pull toward circle/ellipse ----
+        # Build masks selecting the four "corners" along the (beam, draft)
+        # plane — a corner is a lattice point at index 0 or end on both
+        # the beam dim AND the draft dim.
         c = v["cross_section_c"]
         circle_pull = (c - 0.5) * 0.15 * max(box_size[beam_axis], box_size[draft_axis])
-        for i in range(l_cp):
-            for j in (0, m_cp - 1):
-                for k in (0, n_cp - 1):
-                    # push diagonal corners toward axis centre
-                    centre_dir_beam = -1.0 if j == 0 else 1.0
-                    centre_dir_draft = -1.0 if k == 0 else 1.0
-                    offsets[i, j, k, beam_axis] -= centre_dir_beam * circle_pull
-                    offsets[i, j, k, draft_axis] -= centre_dir_draft * circle_pull
 
-        # Volume coefficient: overall magnitude scale (0.4 -> 0.9 multiplier).
+        beam_corner_mask = np.zeros(beam_n, dtype=float)
+        beam_corner_mask[0] = -1.0
+        beam_corner_mask[-1] = +1.0
+        draft_corner_mask = np.zeros(draft_n, dtype=float)
+        draft_corner_mask[0] = -1.0
+        draft_corner_mask[-1] = +1.0
+        beam_corner_b = beam_corner_mask.reshape(beam_shape)
+        draft_corner_b = draft_corner_mask.reshape(draft_shape)
+        # corner_indicator is +/-1 at the four (beam, draft) corners and
+        # 0 elsewhere. We use abs() to gate on "is a corner" and use the
+        # signed mask for the direction.
+        is_corner = (np.abs(beam_corner_b) > 0) & (np.abs(draft_corner_b) > 0)
+        offsets[..., beam_axis] -= np.where(is_corner, beam_corner_b, 0.0) * circle_pull
+        offsets[..., draft_axis] -= np.where(is_corner, draft_corner_b, 0.0) * circle_pull
+
+        # ---- Volume coefficient: overall magnitude scale ----
         offsets *= 0.5 + v["volume_coef"]
 
-        # Nose sharpness: taper the forward-most slab inward so sharp (0)
-        # gives a pointy nose, rounded (1) leaves dome intact.
+        # ---- Nose sharpness: taper the forward-most primary slab ----
         sharpness = v["nose_sharpness"]
         taper = (1.0 - sharpness) * 0.3
-        for j in (0, m_cp - 1):
-            for k in (0, n_cp - 1):
-                offsets[l_cp - 1, j, k, beam_axis] -= (
-                    (1.0 if j == m_cp - 1 else -1.0) * taper * box_size[beam_axis] * 0.1
-                )
-                offsets[l_cp - 1, j, k, draft_axis] -= (
-                    (1.0 if k == n_cp - 1 else -1.0) * taper * box_size[draft_axis] * 0.1
-                )
+        # Build a slab indicator that picks the LAST primary slice
+        # (i = l_cp-1) and broadcasts to the full lattice.
+        nose_slab = np.zeros(prim_n, dtype=float)
+        nose_slab[-1] = 1.0
+        nose_slab_b = nose_slab.reshape(prim_shape)
+        # Beam corner direction at nose: -1 at beam_dim=0, +1 at beam_dim=end.
+        # (Same convention as before, just generalised across the actual
+        # beam_dim.) Multiply by 0/1 corner mask to restrict to corners.
+        beam_signed_corner = np.zeros(beam_n, dtype=float)
+        beam_signed_corner[0] = -1.0
+        beam_signed_corner[-1] = +1.0
+        beam_signed_corner_b = beam_signed_corner.reshape(beam_shape)
+        draft_signed_corner = np.zeros(draft_n, dtype=float)
+        draft_signed_corner[0] = -1.0
+        draft_signed_corner[-1] = +1.0
+        draft_signed_corner_b = draft_signed_corner.reshape(draft_shape)
+        # Mask the four nose-tip corners (i==prim_n-1, beam=∂, draft=∂).
+        nose_corner_mask = (
+            (nose_slab_b > 0)
+            & (np.abs(beam_signed_corner_b) > 0)
+            & (np.abs(draft_signed_corner_b) > 0)
+        )
+        offsets[..., beam_axis] -= np.where(
+            nose_corner_mask,
+            beam_signed_corner_b * taper * box_size[beam_axis] * 0.1,
+            0.0,
+        )
+        offsets[..., draft_axis] -= np.where(
+            nose_corner_mask,
+            draft_signed_corner_b * taper * box_size[draft_axis] * 0.1,
+            0.0,
+        )
 
         # F5 (mesh-quality design §4): clamp per-lattice-point offset so
         # no single control point moves farther than half the local cell
@@ -341,10 +418,16 @@ class BulbFFDDeformer:
         # the nose tip when ``longitudinal_pos`` + low ``nose_sharpness``
         # push two lattice columns past each other — the failure mode
         # Agent 1 saw as 66–76 flipped triangles in the generated mesh.
-        spacing = np.zeros(3, dtype=float)
-        spacing[axis_primary] = box_size[axis_primary] / max(l_cp - 1, 1)
-        spacing[beam_axis] = box_size[beam_axis] / max(m_cp - 1, 1)
-        spacing[draft_axis] = box_size[draft_axis] / max(n_cp - 1, 1)
+        # Spacing per world axis = box_size / (lattice resolution - 1)
+        # along that axis; the lattice's spatial dims map 1-to-1 to world
+        # axes (audit 2026-04-26).
+        spacing = np.array(
+            [
+                box_size[axis] / max(offsets.shape[axis] - 1, 1)
+                for axis in range(3)
+            ],
+            dtype=float,
+        )
         max_offset = 0.5 * spacing  # 3-vector, broadcasts over (l, m, n)
         # Protect against a degenerate zero-width box direction.
         safe_max = np.where(max_offset > 0, max_offset, 1.0)
@@ -387,6 +470,34 @@ class BulbFFDDeformer:
                     w = (bi[i] * bj[j] * bk[k])[:, None]  # (N, 1)
                     deformed = deformed + w * offsets[i, j, k]
         return deformed
+
+
+def _resolve_secondary_axes(
+    region: dict, primary_axis: int
+) -> tuple[int, int]:
+    """Pick (beam_axis, draft_axis) from the region dict, falling back to
+    the legacy ``other_axes[0]/[1]`` heuristic when the region doesn't
+    carry them.
+
+    Audit 2026-04-26: the StubGeometryAdapter now persists
+    ``beam_axis``/``draft_axis`` in the region dict by analyzing the
+    repaired mesh's symmetry, so production runs use the correct axis.
+    Synthetic test meshes (icosphere, box) are typically passed in with
+    a hand-built region that has only ``axis_index`` — for those the
+    legacy heuristic is the right fallback because their non-primary
+    axes are both centered on zero.
+    """
+    other_axes = [a for a in range(3) if a != primary_axis]
+    beam = region.get("beam_axis")
+    draft = region.get("draft_axis")
+    if beam is None:
+        beam = other_axes[0]
+    if draft is None:
+        # Pick the remaining axis if beam already set; otherwise fall
+        # back to other_axes[1].
+        candidates = [a for a in other_axes if a != int(beam)]
+        draft = candidates[0] if candidates else other_axes[1]
+    return int(beam), int(draft)
 
 
 def _bernstein(degree: int, index: int, t: np.ndarray) -> np.ndarray:

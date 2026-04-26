@@ -46,3 +46,31 @@ def test_quality_score_is_nonnegative_and_finite() -> None:
     score = compute_mesh_quality(mesh)
     assert np.isfinite(score)
     assert score >= 0.0
+
+
+def test_compute_mesh_quality_respects_beam_axis_kwarg() -> None:
+    """The default ``argmin(extents)`` heuristic picks the wrong beam axis
+    on a real ship hull (audit 2026-04-26): on docs/base_hull.stl the Y
+    extent is slightly smaller than Z, so the metric mirrors around Y
+    (the asymmetric draft axis) instead of Z (the symmetric beam axis).
+    When ``beam_axis`` is supplied explicitly, the metric must use it.
+
+    Use a smooth icosphere (low dihedral deviation so the symmetry
+    component dominates ``max(...)``) and squash its lower half so Y is
+    teardrop-asymmetric while Z stays a perfect mirror."""
+    base = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
+    verts = np.asarray(base.vertices, dtype=float).copy()
+    verts[:, 0] *= 4.0           # primary = X
+    # Z stays at unit radius (symmetric ±1, beam axis).
+    # Squash the bottom (-Y) so the Y distribution is teardrop-shaped:
+    # vertices with Y < 0 are pulled toward the centerline.
+    verts[verts[:, 1] < 0, 1] *= 0.3
+    mesh = trimesh.Trimesh(vertices=verts, faces=base.faces, process=False)
+
+    score_z = compute_mesh_quality(mesh, beam_axis=2)
+    score_y = compute_mesh_quality(mesh, beam_axis=1)
+
+    assert score_z < score_y, (
+        f"beam_axis kwarg ignored: Z-quality {score_z:.6f} should be smaller "
+        f"than Y-quality {score_y:.6f} on a Z-symmetric, Y-teardrop hull"
+    )

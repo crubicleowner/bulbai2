@@ -604,7 +604,14 @@ def _mid_gate_evaluator(
             deformed_volume = _mesh_volume(deformed)
             volume_delta = abs(deformed_volume - baseline_volume) / max(baseline_volume, 1e-6)
             # L2: mesh quality — broken meshes get >= 100 and dominated.
-            mesh_quality = compute_mesh_quality(deformed)
+            # Pass the region's resolved beam_axis so the symmetry metric
+            # mirrors around the actual port-starboard axis of the hull
+            # (audit 2026-04-26: the default argmin(extents) heuristic
+            # picks the wrong axis on real ship hulls).
+            mesh_quality = compute_mesh_quality(
+                deformed,
+                beam_axis=region.get("beam_axis"),
+            )
             manufacturability_penalty = _manufacturability_penalty(
                 design_space.manufacturability_warnings(vector)
             )
