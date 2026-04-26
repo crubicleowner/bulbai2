@@ -50,6 +50,8 @@ class BulbFFDDeformer:
         adaptive_subdivision: bool = True,
         adaptive_min_triangles: int = 500,
         adaptive_max_iterations: int = 3,
+        post_repair: bool = True,
+        seam_smoothing_iterations: int = 2,
     ) -> None:
         """
         Parameters
@@ -78,12 +80,33 @@ class BulbFFDDeformer:
         adaptive_max_iterations:
             Hard cap on subdivision passes (prevents runaway on coarse
             baselines). Default 3.
+        post_repair:
+            Audit C 2026-04-26 (Add #2): when True (default) the deformer
+            runs ``merge_vertices`` + ``process(validate=False)`` on the
+            output mesh just before returning it. This folds coincident
+            vertices left over by ``process=False`` construction and
+            re-asserts consistent winding, so meshes loaded from STLs
+            with per-face independent vertices stay watertight after
+            FFD + Taubin. Set to False for tests that need bit-identical
+            vertex-array invariance (``test_deformer_preserves_face_
+            topology`` and friends pass it via ``adaptive_subdivision=
+            False``).
+        seam_smoothing_iterations:
+            Audit C 2026-04-26 (Add #5): pure-Laplacian smoothing
+            iterations applied to the ring of vertices whose smoothstep
+            blend weight is in (0.05, 0.95) — i.e. inside the seam
+            between bulb interior and the rest of the hull. This levels
+            the per-triangle dihedral discontinuity at the boundary
+            without disturbing the rest of the hull. Default 2; set to 0
+            to disable.
         """
         self.force_port_starboard_symmetry = bool(force_port_starboard_symmetry)
         self.post_smoothing_iterations = max(int(post_smoothing_iterations), 0)
         self.adaptive_subdivision = bool(adaptive_subdivision)
         self.adaptive_min_triangles = max(int(adaptive_min_triangles), 1)
         self.adaptive_max_iterations = max(int(adaptive_max_iterations), 0)
+        self.post_repair = bool(post_repair)
+        self.seam_smoothing_iterations = max(int(seam_smoothing_iterations), 0)
 
     def deform(
         self,
@@ -205,8 +228,9 @@ class BulbFFDDeformer:
         # preserves low-frequency shape while rounding high-frequency
         # facet edges. We apply this only to bulb-region vertices so the
         # rest of the hull keeps its original triangulation.
+        taubin_skipped = False
         if self.post_smoothing_iterations > 0:
-            _apply_taubin_to_region(
+            taubin_skipped = not _apply_taubin_to_region(
                 out,
                 primary_axis=primary_axis,
                 blend_start=blend_start,
@@ -216,6 +240,31 @@ class BulbFFDDeformer:
             # Re-assert symmetry after smoothing (Laplacian can drift
             # micro-asymmetries back in). Keep the same subset scope and
             # the same resolved beam axis we used for the first pass.
+            if self.force_port_starboard_symmetry and not taubin_skipped:
+                out.vertices = _enforce_mirror_symmetry_subset(
+                    vertices=np.asarray(out.vertices),
+                    beam_axis=beam_axis,
+                    subset_indices=np.nonzero(participating)[0],
+                    primary_axis=primary_axis,
+                )
+
+        # Audit C 2026-04-26 (Add #5): tiny pure-Laplacian smoothing on
+        # the ring of seam vertices to flatten the per-triangle dihedral
+        # discontinuity at the boundary between bulb interior and the
+        # rest of the hull. Only runs if Taubin actually executed (small
+        # regions where Taubin is bypassed: the seam ring would also be
+        # too sparse for the Laplacian to behave well, so we skip it
+        # together — keeps the same "tiny → polygonal-but-watertight"
+        # tradeoff Bug #6 already chose).
+        if self.seam_smoothing_iterations > 0 and not taubin_skipped:
+            _apply_seam_laplacian(
+                out,
+                primary_axis=primary_axis,
+                blend_start=blend_start,
+                blend_width=blend_width,
+                iterations=self.seam_smoothing_iterations,
+                beam_axis=beam_axis if self.force_port_starboard_symmetry else None,
+            )
             if self.force_port_starboard_symmetry:
                 out.vertices = _enforce_mirror_symmetry_subset(
                     vertices=np.asarray(out.vertices),
@@ -223,6 +272,17 @@ class BulbFFDDeformer:
                     subset_indices=np.nonzero(participating)[0],
                     primary_axis=primary_axis,
                 )
+
+        # Audit C 2026-04-26 (Add #2): fold coincident vertices and
+        # re-assert winding. Done last so it sees the final post-Taubin /
+        # post-seam-smoothing positions. ``merge_vertices`` only
+        # consolidates positions that are *already* coincident (within
+        # trimesh's default tol); it does not undo the Taubin smoothing
+        # — verified by ``test_taubin_does_not_collapse_mesh_with_
+        # duplicated_vertices`` continuing to pass.
+        if self.post_repair:
+            out.merge_vertices()
+            out.process(validate=False)
 
         return out
 
@@ -553,8 +613,13 @@ def _apply_taubin_to_region(
     iterations: int,
     lamb: float = 0.5,
     nu: float = -0.53,
-) -> None:
+) -> bool:
     """Apply Taubin λ/μ smoothing to vertices that participate in the FFD.
+
+    Returns ``True`` when Taubin actually ran, ``False`` when one of the
+    Bug #6 small-region guards fired and the smoothing was skipped. The
+    caller uses the return value to mirror the same skip on dependent
+    passes (e.g. seam smoothing in Add #5).
 
     Done in-place on ``mesh.vertices``. Vertices outside the region
     (axis < blend_start) are explicitly held fixed so the rest of the
@@ -596,7 +661,7 @@ def _apply_taubin_to_region(
     vertices = np.asarray(mesh.vertices, dtype=float)
     n = len(vertices)
     if n == 0 or iterations <= 0:
-        return
+        return False
 
     # ---- Bug #6: small-region guard --------------------------------------
     #
@@ -605,7 +670,7 @@ def _apply_taubin_to_region(
     raw_axis_pre = vertices[:, primary_axis]
     n_participating = int(np.count_nonzero(raw_axis_pre >= blend_start))
     if n_participating < _TAUBIN_MIN_PARTICIPATING_VERTICES:
-        return
+        return False
 
     # ---- F1: weld coincident vertices by position ------------------------
     #
@@ -622,7 +687,7 @@ def _apply_taubin_to_region(
     # Bug #6: second guard — welded graph must have enough nodes for the
     # Laplacian to behave well. Below the threshold we skip smoothing.
     if n_unique < _TAUBIN_MIN_UNIQUE_VERTICES:
-        return
+        return False
 
     # Welded face indices: each face's three vertex indices map onto the
     # unique-position space.
@@ -642,7 +707,7 @@ def _apply_taubin_to_region(
     )
     edges = edges[edges[:, 0] != edges[:, 1]]
     if len(edges) == 0:
-        return
+        return False
     edges = np.sort(edges, axis=1)
     edges = np.unique(edges, axis=0)
 
@@ -707,6 +772,210 @@ def _apply_taubin_to_region(
     )
 
     mesh.vertices = vertices
+    return True
+
+
+def _apply_seam_laplacian(
+    mesh: trimesh.Trimesh,
+    *,
+    primary_axis: int,
+    blend_start: float,
+    blend_width: float,
+    iterations: int,
+    beam_axis: int | None = None,
+) -> None:
+    """Apply a few pure-Laplacian (positive-only) smoothing iterations to
+    the ring of vertices in the FFD seam.
+
+    Audit C 2026-04-26 (Add #5): the smoothstep weight ``w`` rises from
+    0 at ``blend_start`` to 1 at ``blend_start + blend_width``. The seam
+    ring is the set of vertices with ``w ∈ (0.05, 0.95)`` — they sit in
+    the blend zone where the FFD displacement is partially applied, so
+    triangulation defects (mismatching dihedral angles between adjacent
+    facets) concentrate there. A tiny Laplacian pass on this ring only
+    levels the dihedral without disturbing the rest of the hull.
+
+    Implementation mirrors ``_apply_taubin_to_region``:
+    * Welded by position (matches Taubin's adjacency graph so we don't
+      pick up the disconnected per-face-vertex pathology).
+    * Pinned vertices outside the ring are *not* updated; their welded
+      position is held fixed across iterations.
+    * One iteration = ``new = mean(neighbours)`` for ring nodes only.
+
+    Done in-place on ``mesh.vertices``. Falls through to a no-op when
+    the seam ring is empty (degenerate or tiny mesh).
+    """
+    from scipy.sparse import csr_matrix
+
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    n = len(vertices)
+    if n == 0 or iterations <= 0:
+        return
+
+    decimals = _adaptive_weld_decimals(mesh)
+    rounded = np.round(vertices, decimals=decimals)
+    unique_positions, inverse = np.unique(rounded, axis=0, return_inverse=True)
+    n_unique = int(unique_positions.shape[0])
+
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    welded_faces = inverse[faces]
+
+    edges = np.concatenate(
+        [
+            welded_faces[:, [0, 1]],
+            welded_faces[:, [1, 2]],
+            welded_faces[:, [2, 0]],
+        ],
+        axis=0,
+    )
+    edges = edges[edges[:, 0] != edges[:, 1]]
+    if len(edges) == 0:
+        return
+    edges = np.sort(edges, axis=1)
+    edges = np.unique(edges, axis=0)
+
+    rows = np.concatenate([edges[:, 0], edges[:, 1]])
+    cols = np.concatenate([edges[:, 1], edges[:, 0]])
+    degree = np.bincount(rows, minlength=n_unique).astype(float)
+    safe_degree = np.where(degree > 0, degree, 1.0)
+    weights = 1.0 / safe_degree[rows]
+    adjacency = csr_matrix((weights, (rows, cols)), shape=(n_unique, n_unique))
+
+    raw_axis = vertices[:, primary_axis]
+    if blend_width > 0:
+        t_raw = (raw_axis - blend_start) / blend_width
+    else:
+        t_raw = np.where(raw_axis >= blend_start, 1.0, 0.0)
+    t_raw = np.clip(t_raw, 0.0, 1.0)
+    vertex_smooth_weight = t_raw * t_raw * (3.0 - 2.0 * t_raw)
+    # Ring mask in raw-vertex space.
+    ring_mask_raw = (vertex_smooth_weight > 0.05) & (vertex_smooth_weight < 0.95)
+    if not ring_mask_raw.any():
+        return
+
+    # Welded-space ring mask: a unique node is on the ring if ANY of its
+    # raw duplicates is.
+    ring_mask = np.zeros(n_unique, dtype=bool)
+    np.logical_or.at(ring_mask, inverse, ring_mask_raw)
+
+    # Compute welded positions as mean of duplicates.
+    welded_positions = np.zeros((n_unique, 3), dtype=float)
+    counts = np.bincount(inverse, minlength=n_unique).astype(float)
+    safe_counts = np.where(counts > 0, counts, 1.0)
+    for dim in range(3):
+        welded_positions[:, dim] = (
+            np.bincount(inverse, weights=vertices[:, dim], minlength=n_unique)
+            / safe_counts
+        )
+
+    # When the deformer is enforcing mirror symmetry around a beam axis,
+    # the seam ring may straddle the ring boundary asymmetrically: a +beam
+    # vertex's smoothstep weight may push it just into the ring while its
+    # -beam partner sits just outside. Updating only one half of such a
+    # pair widens the mirror error the upstream symmetry pass just
+    # minimised. Strategy: identify mutual mirror pairs in the FULL
+    # welded mesh; update ANY vertex whose mirror is in the ring (even
+    # if the vertex itself isn't), and average the two neighbour means
+    # so both halves move together. ``beam_axis is None`` means symmetry
+    # is off and the full 3-D Laplacian on every ring node is fine.
+    if beam_axis is not None:
+        from scipy.spatial import cKDTree
+
+        # Find mutual mirror pairs across the full welded mesh, not just
+        # the ring — the ring is taper-defined, but symmetry is global.
+        mirror_all = welded_positions.copy()
+        mirror_all[:, int(beam_axis)] *= -1.0
+        tree_all = cKDTree(welded_positions)
+        bbox_diag = float(
+            np.linalg.norm(
+                welded_positions.max(axis=0) - welded_positions.min(axis=0)
+            )
+        )
+        threshold = max(0.02 * bbox_diag, 1e-9)
+        distances_all, partners_all = tree_all.query(mirror_all, k=1)
+        partners_all = np.asarray(partners_all, dtype=int)
+        mutual_all = partners_all[partners_all] == np.arange(n_unique)
+        valid_all = (
+            mutual_all
+            & (distances_all <= threshold)
+            & (partners_all != np.arange(n_unique))
+        )
+
+        # Active set: any welded node whose ITSELF or its valid mirror
+        # partner lies on the ring. ``paired_global[i]`` is i's mirror
+        # partner (or -1 if no mutual mirror).
+        paired_global = np.where(valid_all, partners_all, -1)
+        ring_or_mirror_in_ring = ring_mask | (
+            (paired_global >= 0) & ring_mask[np.where(paired_global >= 0, paired_global, 0)]
+        )
+        active_mask = ring_or_mirror_in_ring & (paired_global >= 0)
+    else:
+        active_mask = ring_mask
+        paired_global = -np.ones(n_unique, dtype=np.int64)
+
+    # Damped step: a pure-replacement Laplacian (pos = mean(neighbours))
+    # always shrinks the ring inward by a fraction of the local edge
+    # length per iteration. After 2 such iterations on a coarse mesh,
+    # ring vertices can move enough to leave the bulb region entirely,
+    # creating downstream asymmetry. A damped step (pos += alpha *
+    # (mean - pos)) preserves the mean's smoothing effect on the
+    # dihedral while limiting per-iteration drift to ``alpha`` of the
+    # full Laplacian. With alpha=0.5 and 2 iterations the cumulative
+    # drift is ~75% of the pure-Laplacian case but the dihedral signal
+    # is still flattened (the 5% test threshold remains comfortably met).
+    alpha = 0.5
+    for _ in range(iterations):
+        neighbour_means = adjacency @ welded_positions
+        if beam_axis is None:
+            updated = welded_positions + alpha * (
+                neighbour_means - welded_positions
+            )
+            welded_positions = np.where(
+                active_mask[:, None], updated, welded_positions
+            )
+        else:
+            # Symmetrise the (damped) update across each mutual mirror
+            # pair so +beam and -beam nodes (where at least one is on
+            # the ring) move together, preserving the mirror invariant
+            # exactly.
+            updated = welded_positions.copy()
+            done = np.zeros(n_unique, dtype=bool)
+            active_indices = np.nonzero(active_mask)[0]
+            for global_i in active_indices:
+                if done[global_i]:
+                    continue
+                global_j = int(paired_global[global_i])
+                if global_j < 0 or global_j == global_i:
+                    continue
+                m_i = neighbour_means[global_i].copy()
+                m_j = neighbour_means[global_j].copy()
+                # Mirror j's mean back to the +beam side, average, then
+                # apply a damped step to current pos (also averaged).
+                m_j[int(beam_axis)] *= -1.0
+                target = 0.5 * (m_i + m_j)
+                p_i = welded_positions[global_i].copy()
+                p_j = welded_positions[global_j].copy()
+                p_j[int(beam_axis)] *= -1.0
+                cur_avg = 0.5 * (p_i + p_j)
+                damped = cur_avg + alpha * (target - cur_avg)
+                updated[global_i] = damped
+                damped_mirror = damped.copy()
+                damped_mirror[int(beam_axis)] *= -1.0
+                updated[global_j] = damped_mirror
+                done[global_i] = True
+                done[global_j] = True
+            welded_positions = updated
+
+    # Scatter welded positions back, but only for raw vertices on the
+    # ring (and active in symmetry-paired set when beam_axis is set).
+    new_vertices = vertices.copy()
+    if beam_axis is None:
+        scatter_mask = ring_mask_raw
+    else:
+        scatter_mask = active_mask[inverse]
+    new_vertices[scatter_mask] = welded_positions[inverse[scatter_mask]]
+
+    mesh.vertices = new_vertices
 
 
 def _enforce_mirror_symmetry_subset(

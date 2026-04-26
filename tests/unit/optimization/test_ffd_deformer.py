@@ -804,3 +804,245 @@ def test_taubin_welding_tolerance_scales_with_mesh_size() -> None:
     # Neither output should be degenerate (volume not collapsed).
     assert abs(out_small.volume) > 0.5 * abs(small.volume)
     assert abs(out_large.volume) > 0.5 * abs(large.volume)
+
+
+# ---- B2 Add #2 + Add #5: post-FFD trimesh repair + seam smoothing ---------
+#
+# Audit C 2026-04-26 (quality strategist):
+#
+#   Add #2  After ``deformer.deform()`` returns, the mesh is built with
+#           ``process=False`` so duplicate vertices and minor non-manifold
+#           edges from Taubin / symmetry can persist. The L2 mesh-quality
+#           metric ``compute_mesh_quality`` penalises non-watertight meshes
+#           with WATERTIGHT_PENALTY=100, dominating any genuine quality
+#           signal and steering NSGA-II away from candidates that just need
+#           a ``merge_vertices`` pass. Fix: opt-in post-repair with a new
+#           ``post_repair`` kwarg defaulting to True.
+#
+#   Add #5  The smoothstep blend at ``axis_min`` makes the FFD displacement
+#           weights C1 continuous, but the *triangulation* across the seam
+#           stays unchanged — only positions move. Adjacent triangles
+#           inside vs. outside still meet at differing dihedral angles,
+#           producing the visible "welding seam" the user complained about.
+#           Fix: tiny pure-Laplacian pass on the ring of seam vertices
+#           (smoothstep weight in (0.05, 0.95)) controlled by a new
+#           ``seam_smoothing_iterations`` kwarg defaulting to 2.
+
+
+def _vertex_duplicated_hull_for_repair() -> trimesh.Trimesh:
+    """Same construction as ``_vertex_duplicated_hull`` but replicated here
+    for clarity in B2 Add #2 tests. The 3-verts-per-face layout is the
+    canonical "barely-not-watertight" baseline ``merge_vertices`` is
+    designed to fix."""
+    base = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    base.apply_scale([2.0, 0.75, 0.5])
+    new_vertices = base.vertices[base.faces.reshape(-1)]
+    new_faces = np.arange(len(new_vertices), dtype=np.int64).reshape(-1, 3)
+    duplicated = trimesh.Trimesh(
+        vertices=new_vertices,
+        faces=new_faces,
+        process=False,
+    )
+    return duplicated
+
+
+def test_post_repair_yields_watertight_output_after_taubin_disconnections() -> None:
+    """B2 Add #2: a coarse hull built from per-face independent vertices
+    (the pathological STL layout) is NOT watertight even after FFD +
+    welded-Taubin smoothing because trimesh keeps the duplicated vertex
+    array intact. Running ``merge_vertices`` + ``process`` after the
+    deform pass folds coincident verts back together and re-asserts
+    consistent winding, so the output becomes watertight.
+    """
+    mesh = _vertex_duplicated_hull_for_repair()
+    region = _bulb_region_from_mesh(mesh)
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.03,
+            "breadth_ratio":    0.12,
+            "height_ratio":     0.4,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.55,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.6,
+            "nose_sharpness":   0.4,
+        }
+    )
+
+    deformer_repaired = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=3,
+        adaptive_subdivision=False,
+        post_repair=True,
+    )
+    deformer_baseline = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=3,
+        adaptive_subdivision=False,
+        post_repair=False,
+    )
+    repaired = deformer_repaired.deform(mesh, region, vector)
+    baseline = deformer_baseline.deform(mesh, region, vector)
+
+    assert repaired.is_watertight, (
+        "post_repair=True should fold coincident verts and yield a "
+        "watertight mesh on duplicated-vertex input"
+    )
+    # Baseline (no repair) is the un-repaired output, which on this
+    # pathological mesh is non-watertight. Either way, the two outputs
+    # must DIFFER — repair changes vertex count from 3*F to V_unique.
+    assert len(repaired.vertices) != len(baseline.vertices), (
+        "post_repair=True should change topology vs post_repair=False on "
+        "duplicated-vertex input"
+    )
+
+
+def test_seam_smoothing_reduces_dihedral_jump_across_blend_boundary() -> None:
+    """B2 Add #5: the smoothstep blend at ``axis_min`` is C1 in
+    *displacement weight* but the triangulation across the seam stays
+    unchanged — adjacent triangles inside vs. outside the bulb meet at
+    measurably different dihedral angles (the "welding seam"). A tiny
+    Laplacian pass on the ring of seam vertices levels the dihedral
+    without disturbing the rest of the hull.
+
+    Metric: maximum angle between adjacent face normals for faces with
+    at least one vertex whose smoothstep weight lies in (0.05, 0.95).
+    With ``seam_smoothing_iterations=2`` this should be at least 5 %
+    smaller than with ``seam_smoothing_iterations=0``.
+    """
+    mesh = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
+    mesh.apply_scale([2.0, 0.75, 0.5])
+    region = _bulb_region_from_mesh(mesh)
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.04,
+            "breadth_ratio":    0.15,
+            "height_ratio":     0.5,
+            "axis_z_ratio":     0.3,
+            "longitudinal_pos": 0.7,
+            "cross_section_c":  0.8,
+            "volume_coef":      0.7,
+            "nose_sharpness":   0.3,
+        }
+    )
+
+    def _max_dihedral_in_seam_ring(deformed: trimesh.Trimesh, region: dict) -> float:
+        """Max angle (radians) between adjacent face normals for any pair
+        of faces sharing an edge where at least one face touches the seam
+        ring (smoothstep weight ∈ (0.05, 0.95))."""
+        primary = int(region["axis_index"])
+        ax_min = float(region["axis_min"])
+        ax_max = float(region["axis_max"])
+        blend_width = 0.10 * (ax_max - ax_min)
+        blend_start = ax_min - blend_width
+        v = np.asarray(deformed.vertices, dtype=float)
+        axis_vals = v[:, primary]
+        if blend_width > 0:
+            raw = (axis_vals - blend_start) / blend_width
+        else:
+            raw = np.where(axis_vals >= ax_min, 1.0, 0.0)
+        t = np.clip(raw, 0.0, 1.0)
+        weights = t * t * (3.0 - 2.0 * t)
+        ring_mask = (weights > 0.05) & (weights < 0.95)
+        ring_indices = set(np.nonzero(ring_mask)[0].tolist())
+
+        faces = np.asarray(deformed.faces, dtype=np.int64)
+        # Mark faces that touch the ring.
+        touches_ring = np.array(
+            [any(int(idx) in ring_indices for idx in face) for face in faces],
+            dtype=bool,
+        )
+        if not touches_ring.any():
+            return 0.0
+
+        # Face normals.
+        tri = v[faces]
+        n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        n_norm = np.linalg.norm(n, axis=1, keepdims=True)
+        n_norm = np.where(n_norm > 0, n_norm, 1.0)
+        n = n / n_norm
+
+        # Build edge -> face map.
+        from collections import defaultdict
+        edges_to_faces: dict[tuple[int, int], list[int]] = defaultdict(list)
+        for fi, face in enumerate(faces):
+            a, b, c = int(face[0]), int(face[1]), int(face[2])
+            for e in ((a, b), (b, c), (c, a)):
+                key = (min(e), max(e))
+                edges_to_faces[key].append(fi)
+
+        max_angle = 0.0
+        for fids in edges_to_faces.values():
+            if len(fids) != 2:
+                continue
+            f1, f2 = fids
+            if not (touches_ring[f1] or touches_ring[f2]):
+                continue
+            cos_t = float(np.clip(np.dot(n[f1], n[f2]), -1.0, 1.0))
+            angle = float(np.arccos(cos_t))
+            if angle > max_angle:
+                max_angle = angle
+        return max_angle
+
+    deformer_no_seam = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=3,
+        adaptive_subdivision=False,
+        post_repair=False,
+        seam_smoothing_iterations=0,
+    )
+    deformer_with_seam = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=3,
+        adaptive_subdivision=False,
+        post_repair=False,
+        seam_smoothing_iterations=2,
+    )
+    no_seam = deformer_no_seam.deform(mesh, region, vector)
+    with_seam = deformer_with_seam.deform(mesh, region, vector)
+
+    dihedral_no = _max_dihedral_in_seam_ring(no_seam, region)
+    dihedral_yes = _max_dihedral_in_seam_ring(with_seam, region)
+
+    assert dihedral_no > 0.0, "Test setup did not exercise the seam ring"
+    assert dihedral_yes < dihedral_no * 0.95, (
+        f"Seam smoothing did not flatten dihedral enough: "
+        f"no_seam={np.degrees(dihedral_no):.2f}deg, "
+        f"with_seam={np.degrees(dihedral_yes):.2f}deg "
+        f"(want ≥5% reduction)"
+    )
+
+
+def test_post_repair_can_be_disabled_for_topology_invariant_tests() -> None:
+    """B2 Add #2: with ``post_repair=False, adaptive_subdivision=False``
+    the output must keep EXACTLY the input vertex count so legacy tests
+    relying on bit-identical vertex-array invariance (``test_deformer_
+    preserves_face_topology``, ``test_deformer_freezes_vertices_outside_
+    bulb_region``) keep passing without modification."""
+    mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    mesh.apply_scale([2.0, 0.75, 0.5])
+    region = _bulb_region_from_mesh(mesh)
+    vector = KrachtVector(
+        values={
+            "length_ratio":     0.03,
+            "breadth_ratio":    0.12,
+            "height_ratio":     0.4,
+            "axis_z_ratio":     0.25,
+            "longitudinal_pos": 0.55,
+            "cross_section_c":  0.7,
+            "volume_coef":      0.6,
+            "nose_sharpness":   0.4,
+        }
+    )
+
+    deformer_no_repair = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=0,
+        adaptive_subdivision=False,
+        post_repair=False,
+    )
+    out_no_repair = deformer_no_repair.deform(mesh, region, vector)
+    assert len(out_no_repair.vertices) == len(mesh.vertices), (
+        "post_repair=False must preserve exact vertex count for the "
+        "bit-identical-vertex-array invariant"
+    )
