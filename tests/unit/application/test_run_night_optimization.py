@@ -30,8 +30,12 @@ from bulbopt.application.use_cases.run_night_optimization import (
     NightOptimizationConfig,
     run_night_optimization,
 )
+from bulbopt.domain.core.models import CaseStatus
 from bulbopt.optimization.learning.cfd_evidence_store import CFDEvidenceStore
 from bulbopt.optimization.parametric.kracht_space import KrachtVector
+from bulbopt.storage.project_repository.filesystem_repository import (
+    FilesystemProjectRepository,
+)
 
 
 def _write_watertight_stl(path: Path) -> None:
@@ -1257,3 +1261,171 @@ def test_run_night_optimization_uses_only_compatible_cfd_evidence(
     assert '"candidate_rows": 2' in case_log
     assert '"eligible": 1' in case_log
     assert '"hull_mismatch": 1' in case_log
+
+
+def test_run_night_optimization_writes_per_generation_snapshots(
+    tmp_path: Path,
+) -> None:
+    """Spec §10.2 — each generation produces a snapshot directory under
+    ``working/night_optimization/generations/gen-NN/`` so an engineer can
+    salvage results when the run crashes mid-stream.
+
+    Each ``gen-NN/`` carries:
+      * ``population.json`` — vector + objectives per individual
+      * ``pareto.json``     — current non-dominated set
+
+    A run-level ``convergence.csv`` records one row per generation with
+    header + ``generation, n_individuals, best_obj0, best_obj1, best_obj2,
+    mean_obj0`` (3 objectives in this codebase).
+    """
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+
+    summary = run_night_optimization(
+        project_root=tmp_path / "projects",
+        command=CreateCaseCommand(
+            case_name="night-snapshots",
+            source_path=str(source_path),
+            vessel_length_m=142.0,
+            vessel_beam_m=19.1,
+            vessel_draft_m=6.0,
+            displacement_t=8420.0,
+            speed_knots=[18.0, 20.0],
+        ),
+        config=NightOptimizationConfig(
+            population=4,
+            generations=2,
+            high_fidelity_budget=1,
+            runtime_budget_hours=1.0,
+            seed=51,
+            mid_gate_estimated_seconds_per_eval=0.001,
+            high_gate_estimated_seconds_per_eval=0.005,
+        ),
+    )
+
+    case_dir = tmp_path / "projects" / summary.case_id
+    generations_dir = case_dir / "working" / "night_optimization" / "generations"
+    assert generations_dir.exists()
+
+    gen0_pop = generations_dir / "gen-00" / "population.json"
+    gen1_pop = generations_dir / "gen-01" / "population.json"
+    gen0_pareto = generations_dir / "gen-00" / "pareto.json"
+    gen1_pareto = generations_dir / "gen-01" / "pareto.json"
+
+    assert gen0_pop.exists()
+    assert gen1_pop.exists()
+    assert gen0_pareto.exists()
+    assert gen1_pareto.exists()
+
+    population = json.loads(gen0_pop.read_text(encoding="utf-8"))
+    assert "individuals" in population
+    assert len(population["individuals"]) == 4
+    for individual in population["individuals"]:
+        assert "vector" in individual
+        assert "objectives" in individual
+        assert len(individual["vector"]) == 8
+
+    pareto = json.loads(gen0_pareto.read_text(encoding="utf-8"))
+    assert "candidates" in pareto
+    assert len(pareto["candidates"]) >= 1
+    for candidate in pareto["candidates"]:
+        assert "vector" in candidate
+        assert "objectives" in candidate
+
+    convergence_path = (
+        case_dir / "working" / "night_optimization" / "convergence.csv"
+    )
+    assert convergence_path.exists()
+    csv_lines = [
+        line
+        for line in convergence_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(csv_lines) == 3  # 1 header + 2 data rows
+    header = csv_lines[0].split(",")
+    for column in (
+        "generation",
+        "n_individuals",
+        "best_obj0",
+        "best_obj1",
+        "best_obj2",
+        "mean_obj0",
+    ):
+        assert column in header
+    # First data row's generation index is 0.
+    first_row = csv_lines[1].split(",")
+    assert first_row[header.index("generation")] == "0"
+    assert first_row[header.index("n_individuals")] == "4"
+
+
+def test_run_night_optimization_transitions_through_new_states(
+    tmp_path: Path,
+) -> None:
+    """The case must enter ``RUNNING_NIGHT_OPTIMIZATION`` during the run
+    and finish at ``COMPLETED`` (or ``COMPLETED_WITH_WARNINGS``).
+
+    Hook into the per-generation snapshot callback so we can read the
+    persisted case during the run, not only after.
+    """
+    source_path = tmp_path / "hull.stl"
+    _write_watertight_stl(source_path)
+    project_root = tmp_path / "projects"
+    repository = FilesystemProjectRepository(root_dir=project_root)
+
+    statuses_during_run: list[str] = []
+    original_make = run_night_module._make_generation_writer
+
+    def spying_make(*args, **kwargs):  # noqa: D401
+        inner = original_make(*args, **kwargs)
+        case_for_spy = kwargs.get("case")
+
+        def wrapped(*cb_args, **cb_kwargs):
+            inner(*cb_args, **cb_kwargs)
+            try:
+                reloaded = repository.load_case(case_for_spy.case_id)
+                statuses_during_run.append(reloaded.status.value)
+            except Exception:
+                pass
+
+        return wrapped
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(
+        run_night_module, "_make_generation_writer", side_effect=spying_make
+    ):
+        summary = run_night_optimization(
+            project_root=project_root,
+            command=CreateCaseCommand(
+                case_name="night-lifecycle",
+                source_path=str(source_path),
+                vessel_length_m=142.0,
+                vessel_beam_m=19.1,
+                vessel_draft_m=6.0,
+                displacement_t=8420.0,
+                speed_knots=[18.0, 20.0],
+            ),
+            config=NightOptimizationConfig(
+                population=4,
+                generations=2,
+                high_fidelity_budget=1,
+                runtime_budget_hours=1.0,
+                seed=53,
+                mid_gate_estimated_seconds_per_eval=0.001,
+                high_gate_estimated_seconds_per_eval=0.005,
+            ),
+        )
+
+    # During the run (between generations) the case sat in the new state.
+    assert CaseStatus.RUNNING_NIGHT_OPTIMIZATION.value in statuses_during_run
+
+    # Final terminal status is one of the two completed flavours.
+    assert summary.status in {
+        CaseStatus.COMPLETED.value,
+        CaseStatus.COMPLETED_WITH_WARNINGS.value,
+    }
+    final_case = repository.load_case(summary.case_id)
+    assert final_case.status in {
+        CaseStatus.COMPLETED,
+        CaseStatus.COMPLETED_WITH_WARNINGS,
+    }

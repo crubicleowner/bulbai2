@@ -32,6 +32,7 @@ from bulbopt.optimization.scheduler.budget_scheduler import (
     BudgetScheduler,
 )
 from bulbopt.optimization.strategies.nsga2_strategy import (
+    GenerationSnapshotFn,
     NSGA2Strategy,
     ParetoCandidate,
     ParetoFront,
@@ -79,6 +80,7 @@ class CascadeStrategy:
         seed: int | None = None,
         n_objectives: int = 2,
         warm_start_vectors: Sequence[KrachtVector] | None = None,
+        on_generation_snapshot: GenerationSnapshotFn | None = None,
     ) -> None:
         if high_fidelity_budget < 0:
             raise ValueError("high_fidelity_budget must be >= 0")
@@ -94,6 +96,10 @@ class CascadeStrategy:
         self._warm_start_vectors: List[KrachtVector] = (
             list(warm_start_vectors) if warm_start_vectors else []
         )
+        # Spec 2026-04-22 §10.2: per-generation snapshot callback. Forwarded
+        # straight to NSGA2Strategy so the use case can persist a
+        # ``gen-NN/`` directory after each pymoo generation.
+        self._on_generation_snapshot = on_generation_snapshot
 
     # ---- main entry ------------------------------------------------------
 
@@ -135,6 +141,7 @@ class CascadeStrategy:
             seed=self._seed,
             n_objectives=self._n_objectives,
             warm_start_vectors=self._warm_start_vectors,
+            on_generation_snapshot=self._on_generation_snapshot,
         )
         return strategy.optimize(space=self._space, evaluate=accounted_evaluate)
 

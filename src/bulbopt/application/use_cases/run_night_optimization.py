@@ -157,6 +157,19 @@ def run_night_optimization(
         extra={"case_id": case.case_id, "mode": "night_optimization"},
     )
 
+    # Spec 2026-04-22 §10.1: enter the dedicated night state once the case
+    # has been created. This lets ``bulbopt list`` show "running_night_*"
+    # while the run is in flight, and lets a crashed run that persists in
+    # FAILED be told apart from a vertical-slice failure.
+    case.status = CaseStatus.RUNNING_NIGHT_OPTIMIZATION
+    case.is_recoverable = True
+    repository.save_case(case)
+
+    # Per-generation convergence rows accumulate here as the snapshot
+    # callback fires; the use case writes the final ``convergence.csv``
+    # after the cascade exits.
+    convergence_rows: list[dict] = []
+
     try:
         # Stage 1: prepare base geometry.
         case_logger.log_stage(stage="prepare_geometry", status="started")
@@ -325,6 +338,13 @@ def run_night_optimization(
         )
 
         scheduler = BudgetScheduler(runtime_budget_hours=config.runtime_budget_hours)
+        generation_writer = _make_generation_writer(
+            case_dir=case_dir,
+            repository=repository,
+            case=case,
+            convergence_rows=convergence_rows,
+            case_logger=case_logger,
+        )
         cascade = CascadeStrategy(
             space=space,
             scheduler=scheduler,
@@ -336,8 +356,19 @@ def run_night_optimization(
             seed=config.seed,
             warm_start_vectors=warm_start_vectors,
             n_objectives=3,
+            on_generation_snapshot=generation_writer,
         )
         result: CascadeResult = cascade.run()
+
+        # Persist the run-level convergence series. Empty when no
+        # generation snapshot fired (e.g. the test harness skipped the
+        # callback) — but the file still gets a header row so consumers
+        # don't have to special-case missing files.
+        _write_convergence_csv(
+            case_dir=case_dir,
+            rows=convergence_rows,
+            case_logger=case_logger,
+        )
 
         if _should_run_baseline_cfd(
             openfoam_available=openfoam_available,
@@ -1476,6 +1507,208 @@ def _wrap_mid_gate_with_gp(
         return merged
 
     return wrapped
+
+
+# --- per-generation snapshots (spec 2026-04-22 §10.2) -----------------
+
+
+def _make_generation_writer(
+    *,
+    case_dir: Path,
+    repository: FilesystemProjectRepository,
+    case,
+    convergence_rows: list[dict],
+    case_logger: CaseLogger,
+):
+    """Return a callable that persists one ``gen-NN/`` directory per call.
+
+    The returned closure matches the snapshot signature accepted by
+    :class:`NSGA2Strategy`:
+
+        ``(generation_index, population, objectives, pareto) -> None``
+
+    For each generation we write::
+
+        case_dir/working/night_optimization/generations/gen-NN/
+            population.json   # vector + objectives per individual
+            pareto.json       # current non-dominated set
+
+    plus we accumulate one row in ``convergence_rows`` (the run-level
+    ``convergence.csv`` is flushed after the cascade exits, not per
+    generation, so a half-written CSV doesn't outlive a crashed run).
+
+    Failures inside the writer are logged and swallowed: a bad disk
+    write must NOT abort the optimisation. The rest of the run keeps
+    going and we still get the final outputs.
+    """
+    generations_root = case_dir / "working" / "night_optimization" / "generations"
+
+    def write_generation(
+        generation_index: int,
+        population: List[KrachtVector],
+        objectives: List[List[float]],
+        pareto: List,
+    ) -> None:
+        try:
+            gen_dir = generations_root / f"gen-{int(generation_index):02d}"
+            gen_dir.mkdir(parents=True, exist_ok=True)
+
+            population_payload = {
+                "generation": int(generation_index),
+                "individuals": [
+                    {
+                        "vector": [
+                            float(vector.values[name])
+                            for name in KRACHT_PARAMETER_NAMES
+                        ],
+                        "parameters": {
+                            name: float(vector.values[name])
+                            for name in KRACHT_PARAMETER_NAMES
+                        },
+                        "objectives": [float(value) for value in obj_row],
+                    }
+                    for vector, obj_row in zip(population, objectives)
+                ],
+            }
+            (gen_dir / "population.json").write_text(
+                json.dumps(population_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+            pareto_payload = {
+                "generation": int(generation_index),
+                "candidates": [
+                    {
+                        "vector": [
+                            float(candidate.vector.values[name])
+                            for name in KRACHT_PARAMETER_NAMES
+                        ],
+                        "parameters": {
+                            name: float(candidate.vector.values[name])
+                            for name in KRACHT_PARAMETER_NAMES
+                        },
+                        "objectives": [
+                            float(value) for value in candidate.objectives
+                        ],
+                    }
+                    for candidate in pareto
+                ],
+            }
+            (gen_dir / "pareto.json").write_text(
+                json.dumps(pareto_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+            convergence_rows.append(
+                _convergence_row(
+                    generation_index=int(generation_index),
+                    objectives=objectives,
+                )
+            )
+
+            # Touch the case so an external "bulbopt list" run sees the
+            # case is still active. This also creates a natural hook for
+            # tests that want to confirm the case sat in
+            # RUNNING_NIGHT_OPTIMIZATION during the run.
+            try:
+                repository.save_case(case)
+            except Exception:
+                # save_case is best-effort here; the actual lifecycle
+                # transitions remain in run_night_optimization itself.
+                pass
+
+        except Exception as exc:
+            # Spec brief: do NOT abort the optimisation if the writer
+            # fails. Log and continue.
+            case_logger.log_stage(
+                stage="generation_snapshot",
+                status="failed",
+                extra={
+                    "generation": int(generation_index),
+                    "error": str(exc),
+                },
+            )
+
+    return write_generation
+
+
+def _convergence_row(
+    *,
+    generation_index: int,
+    objectives: List[List[float]],
+) -> dict:
+    """Compute the per-generation convergence summary."""
+    n = len(objectives)
+    n_obj = len(objectives[0]) if objectives else 3
+    # Pad missing columns so a 2-objective evaluator (legacy tests) still
+    # produces 3-column convergence rows.
+    width = max(n_obj, 3)
+
+    bests = [float("inf")] * width
+    sums = [0.0] * width
+    for row in objectives:
+        for index in range(width):
+            if index < len(row):
+                value = float(row[index])
+                if value < bests[index]:
+                    bests[index] = value
+                sums[index] += value
+    means = [sums[index] / n if n else 0.0 for index in range(width)]
+    # If a column never received a value (zero-row cohort) ``best`` stays
+    # ``inf`` — replace with NaN-equivalent string for the CSV later.
+    return {
+        "generation": int(generation_index),
+        "n_individuals": int(n),
+        "best_obj0": bests[0] if bests[0] != float("inf") else float("nan"),
+        "best_obj1": bests[1] if bests[1] != float("inf") else float("nan"),
+        "best_obj2": bests[2] if bests[2] != float("inf") else float("nan"),
+        "mean_obj0": float(means[0]),
+    }
+
+
+def _write_convergence_csv(
+    *,
+    case_dir: Path,
+    rows: Sequence[dict],
+    case_logger: CaseLogger,
+) -> None:
+    """Write ``working/night_optimization/convergence.csv``.
+
+    Always writes a header row so downstream tooling doesn't trip on a
+    missing file. Failures (disk full, etc.) are logged and swallowed —
+    the rest of the night-run should still finalise.
+    """
+    night_dir = case_dir / "working" / "night_optimization"
+    night_dir.mkdir(parents=True, exist_ok=True)
+    path = night_dir / "convergence.csv"
+    columns = [
+        "generation",
+        "n_individuals",
+        "best_obj0",
+        "best_obj1",
+        "best_obj2",
+        "mean_obj0",
+    ]
+    try:
+        lines: list[str] = [",".join(columns)]
+        for row in rows:
+            cells: list[str] = []
+            for column in columns:
+                value = row.get(column)
+                if isinstance(value, float):
+                    # Match repr of NaN / regular floats; sufficient for
+                    # downstream pandas / numpy readers.
+                    cells.append(repr(value))
+                else:
+                    cells.append(str(value))
+            lines.append(",".join(cells))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as exc:
+        case_logger.log_stage(
+            stage="convergence_csv",
+            status="failed",
+            extra={"error": str(exc)},
+        )
 
 
 # --- persistence helpers ------------------------------------------------
