@@ -78,6 +78,8 @@ from bulbopt.optimization.parametric.kracht_space import (
     KrachtVector,
 )
 from bulbopt.optimization.scheduler.budget_scheduler import BudgetScheduler
+from bulbopt.reporting.fuel_savings import project_fuel_savings
+from bulbopt.reporting.pareto_plot import render_pareto_plot_svg
 from bulbopt.optimization.strategies.cascade_strategy import (
     CascadeResult,
     CascadeStrategy,
@@ -567,6 +569,8 @@ def run_night_optimization(
                 engineering_summary=engineering_summary,
                 engineering_outcome=engineering_outcome,
                 warm_start_summary=warm_start_summary,
+                repaired_mesh=repaired_mesh,
+                region=region,
             )
             case_logger.log_stage(
                 stage="build_night_report",
@@ -1857,6 +1861,8 @@ def _render_night_report(
     engineering_summary: dict | None = None,
     engineering_outcome: dict | None = None,
     warm_start_summary: dict | None = None,
+    repaired_mesh: trimesh.Trimesh | None = None,
+    region: dict | None = None,
 ) -> Path:
     template_root = Path(__file__).resolve().parents[2] / "reporting" / "templates"
     report = HtmlReportAdapter(template_root=template_root)
@@ -1864,9 +1870,10 @@ def _render_night_report(
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     pareto_candidates = []
-    for c in result.pareto_front.candidates:
+    for index, c in enumerate(result.pareto_front.candidates, start=1):
         pareto_candidates.append(
             {
+                "candidate_id": f"pareto-{index:03d}",
                 "parameters": dict(c.vector.values),
                 "objectives": list(c.objectives),
             }
@@ -1897,6 +1904,74 @@ def _render_night_report(
             }
         )
 
+    # Pareto SVG: feeds the new pareto-plot section. We pass the
+    # high-fidelity candidates first (so the engineering winner ends up
+    # at the front and is highlighted), then the rest of the Pareto
+    # front. Penalty entries are filtered inside render_pareto_plot_svg.
+    plot_candidates: list[dict] = []
+    seen_ids: set[str] = set()
+    for hf in high_fidelity:
+        plot_candidates.append(
+            {
+                "candidate_id": hf["candidate_id"],
+                "objectives": hf["objectives"],
+            }
+        )
+        seen_ids.add(hf["candidate_id"])
+    for pc in pareto_candidates:
+        if pc["candidate_id"] in seen_ids:
+            continue
+        plot_candidates.append(
+            {
+                "candidate_id": pc["candidate_id"],
+                "objectives": pc["objectives"],
+            }
+        )
+    pareto_plot_svg = render_pareto_plot_svg(plot_candidates)
+
+    # Fuel-savings projection: derive the baseline resistance proxy
+    # directly from the repaired baseline mesh using the same formula
+    # as ``_mid_gate_evaluator`` ((beam * draft) / axial). The winner's
+    # proxy is taken from the first high-fidelity result, falling back
+    # to the first non-penalty Pareto candidate when no HF run was
+    # promoted. When neither is available the fuel-savings section is
+    # left out of the report.
+    fuel_savings: dict | None = None
+    if repaired_mesh is not None and region is not None:
+        try:
+            extents = repaired_mesh.extents.astype(float)
+            primary = int(region.get("axis_index", int(extents.argmax())))
+            secondary = [i for i in range(3) if i != primary]
+            axial = max(extents[primary], 1e-9)
+            beam = max(extents[secondary[0]], 1e-9)
+            draft = max(extents[secondary[1]], 1e-9)
+            baseline_resistance = float((beam * draft) / axial)
+        except Exception:
+            baseline_resistance = None  # type: ignore[assignment]
+        else:
+            winner_resistance: float | None = None
+            if result.high_fidelity_results:
+                first_hf_obj = list(result.high_fidelity_results[0].objectives)
+                if first_hf_obj and first_hf_obj[0] < 1e8:
+                    winner_resistance = float(first_hf_obj[0])
+            if winner_resistance is None:
+                for c in result.pareto_front.candidates:
+                    objs = list(c.objectives)
+                    if objs and objs[0] < 1e8:
+                        winner_resistance = float(objs[0])
+                        break
+            if winner_resistance is not None:
+                fuel_savings = project_fuel_savings(
+                    baseline_resistance=baseline_resistance,
+                    winner_resistance=winner_resistance,
+                )
+                # Pre-format thousands-separated USD/year for the
+                # template. Jinja's ``|format`` filter is %-style and
+                # cannot handle ``{:,.0f}`` directly.
+                fuel_savings["fuel_savings_usd_per_year_formatted"] = (
+                    f"{fuel_savings['fuel_savings_usd_per_year']:,.0f}"
+                )
+
     status = (
         "completed_with_warnings" if result.budget_exhausted else "completed"
     )
@@ -1923,6 +1998,8 @@ def _render_night_report(
         "engineering_summary": engineering_summary,
         "engineering_outcome": engineering_outcome,
         "warm_start_summary": warm_start_summary,
+        "pareto_plot_svg": pareto_plot_svg,
+        "fuel_savings": fuel_savings,
     }
 
     # The HtmlReportAdapter writes report.html via a hard-coded template

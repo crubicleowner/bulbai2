@@ -15,6 +15,13 @@
       .warn { background: #fff4d6; }
       .ok { background: #e3f3de; }
       .note { color: #666; font-size: 0.9em; margin-top: 0.3em; }
+      section.pareto-plot { margin-top: 1em; }
+      section.pareto-plot svg { max-width: 100%; height: auto; }
+      section.fuel-savings { margin-top: 1em; }
+      section.fuel-savings .summary { font-size: 1.05em; padding: 0.4em 0.6em; }
+      section.fuel-savings .summary.positive { background: #e3f3de; }
+      section.fuel-savings .summary.neutral { background: #f3f3f3; }
+      section.fuel-savings .summary.negative { background: #fff4d6; }
     </style>
   </head>
   <body>
@@ -26,6 +33,47 @@
       <strong>Engineering outcome:</strong> {{ engineering_outcome.status }}
       &mdash; {{ engineering_outcome.message }}
     </p>
+    {% endif %}
+
+    {% if pareto_plot_svg %}
+    <section class="pareto-plot">
+      <h2>Pareto plot</h2>
+      <p class="note">Resistance proxy (x) vs. volume delta (y). Winner is highlighted in red. Penalty candidates are dropped before scaling.</p>
+      {{ pareto_plot_svg|safe }}
+    </section>
+    {% endif %}
+
+    {% if fuel_savings %}
+    <section class="fuel-savings">
+      <h2>Annual fuel-savings projection</h2>
+      {% if fuel_savings.drag_reduction_pct > 0 %}
+      <p class="summary positive">
+        <strong>Projected savings:</strong>
+        {{ "%.2f"|format(fuel_savings.drag_reduction_pct) }}% drag reduction &rarr;
+        {{ "%.0f"|format(fuel_savings.fuel_savings_t_per_year) }} t/year fuel
+        &rarr; ${{ fuel_savings.fuel_savings_usd_per_year_formatted }}/year.
+      </p>
+      {% elif fuel_savings.drag_reduction_pct == 0 %}
+      <p class="summary neutral">
+        <strong>No improvement:</strong>
+        winner resistance proxy matches the baseline.
+      </p>
+      {% else %}
+      <p class="summary negative">
+        <strong>No improvement:</strong>
+        winner resistance proxy is {{ "%.2f"|format(-fuel_savings.drag_reduction_pct) }}%
+        worse than the baseline; treat the night-run as inconclusive.
+      </p>
+      {% endif %}
+      <table class="narrow">
+        <tr><th>Drag reduction</th><td>{{ "%.2f"|format(fuel_savings.drag_reduction_pct) }}%</td></tr>
+        <tr><th>Baseline drag proxy</th><td>{{ "%.4f"|format(fuel_savings.drag_proxy_baseline) }}</td></tr>
+        <tr><th>Winner drag proxy</th><td>{{ "%.4f"|format(fuel_savings.drag_proxy_winner) }}</td></tr>
+        <tr><th>Fuel savings (t/year)</th><td>{{ "%.0f"|format(fuel_savings.fuel_savings_t_per_year) }}</td></tr>
+        <tr><th>Fuel savings (USD/year)</th><td>${{ fuel_savings.fuel_savings_usd_per_year_formatted }}</td></tr>
+      </table>
+      <p class="note">Industry rule of thumb: a 1% reduction in drag yields roughly a 1% reduction in fuel consumption. Defaults assume 30,000 t/year burn at 600 USD/t (Panamax-class container ship reference). Adjust for the specific operator profile.</p>
+    </section>
     {% endif %}
 
     {% if stl_invalid_candidates %}
