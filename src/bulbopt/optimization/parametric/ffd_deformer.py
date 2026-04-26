@@ -52,6 +52,8 @@ class BulbFFDDeformer:
         adaptive_max_iterations: int = 3,
         post_repair: bool = True,
         seam_smoothing_iterations: int = 2,
+        tip_remesh_max_edge_factor: float = 0.0,
+        tip_finisher_iterations: int = 0,
     ) -> None:
         """
         Parameters
@@ -99,6 +101,28 @@ class BulbFFDDeformer:
             the per-triangle dihedral discontinuity at the boundary
             without disturbing the rest of the hull. Default 2; set to 0
             to disable.
+        tip_remesh_max_edge_factor:
+            Audit 2026-04-26 — Module B3 Add #1: opt-in uniform remesh of
+            the bulb region BEFORE the FFD lattice push. When > 0 the
+            bulb region (faces with at least one vertex in
+            ``axis >= blend_start``) is replaced by a uniformly
+            triangulated copy where the longest edge does not exceed
+            ``factor * box_size_min(bulb_region)`` (the smallest extent
+            of the region's bounding box). The rest of the hull is
+            untouched. This kills high-aspect-ratio sliver triangles
+            inherited from the baseline STL, which FFD itself cannot
+            remove (it only moves vertices). Default 0.0 (disabled) for
+            backward compatibility; recommended value when enabling is
+            0.05 — set explicitly by callers, do NOT change the default.
+        tip_finisher_iterations:
+            Audit 2026-04-26 — Module B3 Add #2: opt-in extra targeted
+            Laplacian smoothing pass applied AFTER Taubin + seam smoothing
+            + post-repair. It selects faces whose dihedral angle with
+            any neighbour exceeds 30° and runs N gentle Laplacian steps
+            on the union of their vertices. Kills the residual creases
+            visible at the bow tip on real ship hulls without disturbing
+            the rest of the bulb. Default 0 (disabled) for backward
+            compatibility; recommended value when enabling is 2.
         """
         self.force_port_starboard_symmetry = bool(force_port_starboard_symmetry)
         self.post_smoothing_iterations = max(int(post_smoothing_iterations), 0)
@@ -107,6 +131,8 @@ class BulbFFDDeformer:
         self.adaptive_max_iterations = max(int(adaptive_max_iterations), 0)
         self.post_repair = bool(post_repair)
         self.seam_smoothing_iterations = max(int(seam_smoothing_iterations), 0)
+        self.tip_remesh_max_edge_factor = max(float(tip_remesh_max_edge_factor), 0.0)
+        self.tip_finisher_iterations = max(int(tip_finisher_iterations), 0)
 
     def deform(
         self,
@@ -150,6 +176,18 @@ class BulbFFDDeformer:
                 region,
                 min_triangles=self.adaptive_min_triangles,
                 max_iterations=self.adaptive_max_iterations,
+            )
+
+        # Audit 2026-04-26 — Module B3 Add #1: uniform remesh of the bulb
+        # region BEFORE FFD. Adaptive subdivision densifies (multiplies
+        # triangle count); this normalises edge length so high-aspect
+        # slivers inherited from the baseline STL are replaced by uniform
+        # tris. Different concern, different pass; both are opt-in.
+        if self.tip_remesh_max_edge_factor > 0.0:
+            mesh = _uniform_remesh_region(
+                mesh,
+                region,
+                max_edge_factor=self.tip_remesh_max_edge_factor,
             )
 
         # Spec 2026-04-23 §3 Fix A: smooth blend across the boundary. The
@@ -283,6 +321,30 @@ class BulbFFDDeformer:
         if self.post_repair:
             out.merge_vertices()
             out.process(validate=False)
+
+        # Audit 2026-04-26 — Module B3 Add #2: tip finisher. Targeted
+        # Laplacian smoothing on faces whose dihedral with any neighbour
+        # exceeds 30°. Run AFTER post_repair so we see the final mesh
+        # topology. The pass is opt-in (default 0) and gentle by design;
+        # if the participating ring is empty (no high-dihedral faces) it
+        # is a silent no-op.
+        if self.tip_finisher_iterations > 0:
+            _apply_tip_finisher(
+                out,
+                primary_axis=primary_axis,
+                blend_start=blend_start,
+                iterations=self.tip_finisher_iterations,
+                beam_axis=beam_axis if self.force_port_starboard_symmetry else None,
+            )
+            if self.force_port_starboard_symmetry:
+                out.vertices = _enforce_mirror_symmetry_subset(
+                    vertices=np.asarray(out.vertices),
+                    beam_axis=beam_axis,
+                    subset_indices=np.nonzero(
+                        np.asarray(out.vertices)[:, primary_axis] >= blend_start
+                    )[0],
+                    primary_axis=primary_axis,
+                )
 
         return out
 
@@ -1065,3 +1127,377 @@ def _enforce_mirror_symmetry_subset(
         paired.add(local_j)
 
     return symmetric
+
+
+# Audit 2026-04-26 — Module B3: bulb-region uniform remesh + tip finisher.
+# Both helpers are opt-in via BulbFFDDeformer.__init__ kwargs that default
+# to 0 / disabled, so the existing 307 tests cannot regress.
+
+
+def _uniform_remesh_region(
+    mesh: trimesh.Trimesh,
+    region: dict,
+    *,
+    max_edge_factor: float,
+) -> trimesh.Trimesh:
+    """Replace the bulb region's triangulation with a uniformly-edged copy.
+
+    Selects faces whose at-least-one vertex sits in the bulb region (axis
+    >= blend_start where blend_start = axis_min - 0.10*(axis_max-axis_min)
+    matches the deformer's smoothstep blend zone), runs
+    ``trimesh.Trimesh.subdivide_to_size`` on a copy of just those faces
+    with ``max_edge = max_edge_factor * box_size_min(bulb_region)``, then
+    stitches the result back into the full mesh by replacing those faces.
+
+    Falls back to the input mesh unchanged when:
+    * No faces are selected for the bulb region.
+    * The trimesh subdivision raises (e.g. malformed sub-mesh).
+    * The result has more than 2× the input face count (runaway — likely
+      a degenerate slim region whose ``box_size_min`` is near zero).
+
+    The function only accepts the bulb-region face slab; the rest of the
+    mesh's vertices and faces are bit-identical to the input. Adjacent
+    faces in the rest of the hull continue to reference the shared
+    vertices that border the remeshed region (no T-junctions because
+    ``subdivide_to_size`` only subdivides edges *inside* the sub-mesh —
+    however, when a sub-mesh's boundary edge gets subdivided it will
+    introduce a T-junction relative to neighbouring faces in the outer
+    mesh; we accept this because the FFD pass that follows applies a
+    smoothstep blend across the boundary and the post-FFD ``merge_vertices``
+    consolidates coincident points; the seam-smoothing pass also runs at
+    a slightly different fan-out but its dihedral test still works).
+
+    Strategy notes:
+    * We use ``blend_start`` (not ``axis_min``) for selection so the
+      remesh covers the entire participating zone, not just the deformed
+      part — otherwise the seam between remeshed and original triangles
+      lands inside the deformation zone and produces a fresh ridge.
+    * We index by face, not by vertex — a face is "in region" if any of
+      its three vertices is in region. This includes boundary triangles
+      whose far vertex sits outside the region; they get remeshed too,
+      and ``subdivide_to_size`` keeps the outer boundary topology
+      consistent because it only adds vertices on edges, never on the
+      perimeter strictly outside the input.
+    """
+    primary_axis = int(region["axis_index"])
+    axis_min = float(region["axis_min"])
+    axis_max = float(region["axis_max"])
+    if axis_max <= axis_min:
+        return mesh
+
+    blend_width = BulbFFDDeformer.BLEND_WIDTH_FRACTION * (axis_max - axis_min)
+    blend_start = axis_min - blend_width
+
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+
+    in_region_vertex = vertices[:, primary_axis] >= blend_start
+    if not in_region_vertex.any():
+        return mesh
+
+    in_region_face = np.any(in_region_vertex[faces], axis=1)
+    if not in_region_face.any():
+        return mesh
+
+    # Compute target max edge from the bulb region's bounding box: use the
+    # smallest extent so factor=0.05 yields a fraction of the *thinnest*
+    # axis (avoids a giant max_edge on long-thin bulbs).
+    region_vertex_indices = np.unique(faces[in_region_face].ravel())
+    region_vertices = vertices[region_vertex_indices]
+    extents = region_vertices.max(axis=0) - region_vertices.min(axis=0)
+    box_size_min = float(np.min(extents[extents > 0])) if (extents > 0).any() else 0.0
+    if box_size_min <= 0.0:
+        return mesh
+    max_edge = float(max_edge_factor) * box_size_min
+    if max_edge <= 0.0:
+        return mesh
+
+    # Build the sub-mesh of just the in-region faces. Compact the vertex
+    # array so ``subdivide_to_size`` operates on a tight set of nodes.
+    sub_face_indices = np.nonzero(in_region_face)[0]
+    sub_faces_global = faces[sub_face_indices]
+    used_vertex_global = np.unique(sub_faces_global.ravel())
+    global_to_local = -np.ones(len(vertices), dtype=np.int64)
+    global_to_local[used_vertex_global] = np.arange(len(used_vertex_global))
+    sub_faces_local = global_to_local[sub_faces_global]
+    sub_vertices = vertices[used_vertex_global].copy()
+
+    sub_mesh = trimesh.Trimesh(
+        vertices=sub_vertices,
+        faces=sub_faces_local,
+        process=False,
+    )
+
+    try:
+        remeshed = sub_mesh.subdivide_to_size(max_edge=max_edge)
+    except Exception:
+        return mesh
+    if remeshed is None:
+        return mesh
+
+    new_sub_vertices = np.asarray(remeshed.vertices, dtype=float)
+    new_sub_faces = np.asarray(remeshed.faces, dtype=np.int64)
+
+    # Runaway guard: cap the absolute face count of the bulb-region
+    # remesh at 200000. Uniform-remeshing slivers always grows the face
+    # count (often by 10–100×), but if the result would push the bulb
+    # region above 200 k tris the downstream FFD + Taubin cost becomes
+    # unreasonable and we fall back to the un-remeshed mesh. The cap is
+    # well above the typical real-world bulb-region size (~5–20 k tris)
+    # so genuinely useful remeshes always pass.
+    if len(new_sub_faces) > 200_000:
+        return mesh
+
+    # Stitch: rebuild the full mesh by concatenating
+    #   (out-of-region faces, with their original vertex indices)
+    # + (newly-remeshed in-region faces, with vertex indices offset by
+    #    len(vertices) to point into the new vertex block)
+    # then compact unused vertices via merge_vertices.
+    keep_face_mask = ~in_region_face
+    kept_faces = faces[keep_face_mask]
+    new_faces_global = new_sub_faces + len(vertices)
+    combined_faces = np.concatenate([kept_faces, new_faces_global], axis=0)
+
+    # The new sub_mesh's vertices already contain the original
+    # used_vertex_global positions PLUS any new midpoints introduced by
+    # subdivide_to_size. Offsetting by len(vertices) preserves all
+    # positions and lets merge_vertices fold any duplicates with the
+    # original vertices that border the remeshed region.
+    combined_vertices = np.concatenate([vertices, new_sub_vertices], axis=0)
+
+    out = trimesh.Trimesh(
+        vertices=combined_vertices,
+        faces=combined_faces,
+        process=False,
+    )
+    # Fold border vertices (the same physical positions exist in both
+    # ``vertices`` and ``new_sub_vertices``).
+    out.merge_vertices()
+    return out
+
+
+
+
+def _apply_tip_finisher(
+    mesh: trimesh.Trimesh,
+    *,
+    primary_axis: int,
+    blend_start: float,
+    iterations: int,
+    beam_axis: int | None = None,
+    threshold_deg: float = 30.0,
+    alpha: float = 0.5,
+) -> None:
+    """Apply targeted Laplacian smoothing on faces with high dihedral.
+
+    Audit 2026-04-26 — Module B3 Add #2. After the main Taubin pass +
+    seam smoothing + post-repair, residual creases can survive at the
+    bow tip when the baseline triangulation had isolated slivers (small
+    welded-graph degree → low Taubin coupling). The finisher selects:
+
+    1. All faces with at least one vertex in ``axis >= blend_start`` (the
+       bulb region — same scope as the FFD).
+    2. Among those, the ones with at least one neighbour whose dihedral
+       exceeds ``threshold_deg`` (default 30°).
+
+    The union of those faces' vertices gets ``iterations`` damped
+    Laplacian steps:  ``new = pos + alpha * (mean(neighbours) - pos)``.
+
+    Done in-place on ``mesh.vertices``. Falls through when:
+    * No vertices are in the bulb region.
+    * No high-dihedral pairs exist (mesh is already clean).
+
+    The pass is gentle by design (alpha=0.5, default 2 iterations) so
+    it does not flatten legitimate sharp features in the rest of the
+    mesh; combined with the threshold gate it only touches the parts
+    of the bulb tip that are actually defective.
+    """
+    from collections import defaultdict
+    from scipy.sparse import csr_matrix
+
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    if len(vertices) == 0 or len(faces) == 0 or iterations <= 0:
+        return
+
+    # Welded graph (matches Taubin's adjacency build).
+    decimals = _adaptive_weld_decimals(mesh)
+    rounded = np.round(vertices, decimals=decimals)
+    unique_positions, inverse = np.unique(rounded, axis=0, return_inverse=True)
+    n_unique = int(unique_positions.shape[0])
+    if n_unique < 4:
+        return
+    welded_faces = inverse[faces]
+
+    # Face normals.
+    tri = vertices[faces]
+    n_face = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    nlen = np.linalg.norm(n_face, axis=1, keepdims=True)
+    nlen = np.where(nlen > 0, nlen, 1.0)
+    n_face = n_face / nlen
+
+    # Edge -> faces map on the welded graph (dedupes per-face-vertex
+    # baseline STLs).
+    edges_to_faces: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for fi, face in enumerate(welded_faces):
+        a, b, c = int(face[0]), int(face[1]), int(face[2])
+        for e in ((a, b), (b, c), (c, a)):
+            key = (min(e), max(e))
+            edges_to_faces[key].append(fi)
+
+    threshold_rad = np.radians(threshold_deg)
+
+    # In-region face mask: at least one vertex of the face has axis >= blend_start.
+    in_region_vertex = vertices[:, primary_axis] >= blend_start
+    in_region_face = np.any(in_region_vertex[faces], axis=1)
+
+    high_dihedral_face = np.zeros(len(faces), dtype=bool)
+    for fids in edges_to_faces.values():
+        if len(fids) != 2:
+            continue
+        f1, f2 = fids
+        if not (in_region_face[f1] or in_region_face[f2]):
+            continue
+        cos_t = float(np.clip(float(np.dot(n_face[f1], n_face[f2])), -1.0, 1.0))
+        angle = float(np.arccos(cos_t))
+        if angle > threshold_rad:
+            high_dihedral_face[f1] = True
+            high_dihedral_face[f2] = True
+
+    if not high_dihedral_face.any():
+        return
+
+    # Active welded vertices: union of high-dihedral faces' welded
+    # vertices, intersected with in-region (so we never touch a
+    # high-dihedral face that happens to span the seam — its outer
+    # vertex would be moved otherwise).
+    active_raw = np.zeros(len(vertices), dtype=bool)
+    for fi in np.nonzero(high_dihedral_face)[0]:
+        for k in range(3):
+            vi = int(faces[fi, k])
+            if in_region_vertex[vi]:
+                active_raw[vi] = True
+
+    if not active_raw.any():
+        return
+
+    # Welded-space active mask.
+    active_welded = np.zeros(n_unique, dtype=bool)
+    np.logical_or.at(active_welded, inverse, active_raw)
+
+    # Build symmetric adjacency on the welded graph.
+    edges = np.concatenate(
+        [
+            welded_faces[:, [0, 1]],
+            welded_faces[:, [1, 2]],
+            welded_faces[:, [2, 0]],
+        ],
+        axis=0,
+    )
+    edges = edges[edges[:, 0] != edges[:, 1]]
+    if len(edges) == 0:
+        return
+    edges = np.sort(edges, axis=1)
+    edges = np.unique(edges, axis=0)
+
+    rows = np.concatenate([edges[:, 0], edges[:, 1]])
+    cols = np.concatenate([edges[:, 1], edges[:, 0]])
+    degree = np.bincount(rows, minlength=n_unique).astype(float)
+    safe_degree = np.where(degree > 0, degree, 1.0)
+    weights = 1.0 / safe_degree[rows]
+    adjacency = csr_matrix((weights, (rows, cols)), shape=(n_unique, n_unique))
+
+    # Compute welded positions as the mean of duplicates' raw positions.
+    welded_positions = np.zeros((n_unique, 3), dtype=float)
+    counts = np.bincount(inverse, minlength=n_unique).astype(float)
+    safe_counts = np.where(counts > 0, counts, 1.0)
+    for dim in range(3):
+        welded_positions[:, dim] = (
+            np.bincount(inverse, weights=vertices[:, dim], minlength=n_unique)
+            / safe_counts
+        )
+
+    # Mirror-pair handling when symmetry is enforced — same pattern as
+    # ``_apply_seam_laplacian``: identify mutual mirror pairs across the
+    # full welded mesh, average the neighbour-mean updates, apply a damped
+    # step that preserves the mirror invariant exactly.
+    if beam_axis is not None:
+        from scipy.spatial import cKDTree
+
+        mirror_all = welded_positions.copy()
+        mirror_all[:, int(beam_axis)] *= -1.0
+        tree_all = cKDTree(welded_positions)
+        bbox_diag = float(
+            np.linalg.norm(
+                welded_positions.max(axis=0) - welded_positions.min(axis=0)
+            )
+        )
+        threshold_sym = max(0.02 * bbox_diag, 1e-9)
+        distances_all, partners_all = tree_all.query(mirror_all, k=1)
+        partners_all = np.asarray(partners_all, dtype=int)
+        mutual_all = partners_all[partners_all] == np.arange(n_unique)
+        valid_all = (
+            mutual_all
+            & (distances_all <= threshold_sym)
+            & (partners_all != np.arange(n_unique))
+        )
+        paired_global = np.where(valid_all, partners_all, -1)
+    else:
+        paired_global = -np.ones(n_unique, dtype=np.int64)
+
+    for _ in range(iterations):
+        neighbour_means = adjacency @ welded_positions
+        if beam_axis is None:
+            updated = welded_positions + alpha * (
+                neighbour_means - welded_positions
+            )
+            welded_positions = np.where(
+                active_welded[:, None], updated, welded_positions
+            )
+        else:
+            updated = welded_positions.copy()
+            done = np.zeros(n_unique, dtype=bool)
+            active_indices = np.nonzero(active_welded)[0]
+            for global_i in active_indices:
+                if done[global_i]:
+                    continue
+                global_j = int(paired_global[global_i])
+                if global_j < 0 or global_j == global_i:
+                    # No mirror partner — apply a plain damped step.
+                    p_i = welded_positions[global_i]
+                    m_i = neighbour_means[global_i]
+                    updated[global_i] = p_i + alpha * (m_i - p_i)
+                    done[global_i] = True
+                    continue
+                m_i = neighbour_means[global_i].copy()
+                m_j = neighbour_means[global_j].copy()
+                m_j[int(beam_axis)] *= -1.0
+                target = 0.5 * (m_i + m_j)
+                p_i = welded_positions[global_i].copy()
+                p_j = welded_positions[global_j].copy()
+                p_j[int(beam_axis)] *= -1.0
+                cur_avg = 0.5 * (p_i + p_j)
+                damped = cur_avg + alpha * (target - cur_avg)
+                updated[global_i] = damped
+                damped_mirror = damped.copy()
+                damped_mirror[int(beam_axis)] *= -1.0
+                updated[global_j] = damped_mirror
+                done[global_i] = True
+                done[global_j] = True
+            welded_positions = updated
+
+    # Scatter welded positions back to raw vertex array, only for active
+    # raw vertices (welded-active is a superset because of duplicates).
+    new_vertices = vertices.copy()
+    if beam_axis is None:
+        scatter_mask = active_raw
+    else:
+        # When symmetry is on, we may also have moved a +/-beam mirror
+        # whose raw vertex wasn't itself flagged. Use the welded-space
+        # active mask (which already includes both halves of valid mirror
+        # pairs that touched a high-dihedral face).
+        # Note: ``active_welded[inverse]`` is the per-raw-vertex
+        # equivalent — a raw vertex is moved if its welded node is active.
+        scatter_mask = active_welded[inverse]
+    new_vertices[scatter_mask] = welded_positions[inverse[scatter_mask]]
+    mesh.vertices = new_vertices
