@@ -92,3 +92,68 @@ def test_history_store_respects_explicit_path(tmp_path: Path) -> None:
     store.record(_vector(), cd=0.4)
     assert custom.exists()
     assert len(custom.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_history_store_records_and_filters_by_backend(tmp_path: Path) -> None:
+    """Every Cd row must carry a backend tag so the GP isn't trained on
+    mixed-scale data (Bug #5, audit 2026-04-26).
+
+    The high-fidelity evaluator can be ``simple_foam`` (real Cd ~0.3-1.5)
+    or ``proxy``/``surrogate`` (geometric ratio ~0.01-0.5). Mixing them
+    in one GP corrupts the kernel length-scales. ``HistoryStore.load_all``
+    must allow filtering to a single backend.
+    """
+    store = HistoryStore(path=tmp_path / "history.jsonl")
+    for i in range(5):
+        store.record(_vector(length_ratio=0.02 + 0.001 * i), cd=0.4 + 0.01 * i, backend="proxy")
+    for i in range(5):
+        store.record(
+            _vector(length_ratio=0.03 + 0.001 * i),
+            cd=0.8 + 0.01 * i,
+            backend="simple_foam",
+        )
+
+    # Default load returns everything.
+    all_rows = store.load_all()
+    assert len(all_rows) == 10
+
+    foam_only = store.load_all(backend="simple_foam")
+    assert len(foam_only) == 5
+    for _vec, cd in foam_only:
+        assert 0.79 <= cd <= 0.85
+
+    proxy_only = store.load_all(backend="proxy")
+    assert len(proxy_only) == 5
+    for _vec, cd in proxy_only:
+        assert 0.39 <= cd <= 0.45
+
+
+def test_history_store_loads_legacy_rows_without_backend_field(tmp_path: Path) -> None:
+    """JSONL rows written before the backend field existed must still load.
+
+    The fix MUST keep backwards compatibility — legacy rows are tagged
+    with ``backend="unknown"`` (or ``None``) so the GP-training site can
+    decide whether to include them.
+    """
+    history_path = tmp_path / "history.jsonl"
+    legacy_row = {
+        "parameters": {
+            name: 0.5 * (lo + hi)
+            for name, (lo, hi) in KrachtDesignSpace().bounds.items()
+        },
+        "cd": 0.42,
+    }
+    history_path.write_text(json.dumps(legacy_row) + "\n", encoding="utf-8")
+
+    store = HistoryStore(path=history_path)
+
+    rows = store.load_all()
+    assert len(rows) == 1
+    _vec, cd = rows[0]
+    assert cd == pytest.approx(0.42)
+
+    # Filtering by backend on legacy data must not crash; legacy rows
+    # are tagged "unknown" so a filter on a real backend returns nothing.
+    assert store.load_all(backend="simple_foam") == []
+    legacy_filtered = store.load_all(backend="unknown")
+    assert len(legacy_filtered) == 1

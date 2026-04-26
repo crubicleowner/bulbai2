@@ -73,10 +73,23 @@ class ValidityClassifier:
         will return ``None`` for every input.
 
         When every supplied label has the same class (e.g. every past
-        sample was valid), sklearn refuses to fit logistic regression. We
-        record that state and return a degenerate predictor that always
-        emits the majority-class probability (0.0 for all-valid,
-        1.0 for all-invalid).
+        sample was valid or every past sample was invalid), sklearn
+        refuses to fit logistic regression. Bug #4 (audit 2026-04-26)
+        previously made this case freeze the predictor at the seen
+        class's label, so an all-invalid bootstrap (e.g. a bad baseline
+        mesh on the first night-run) would lock every prediction at
+        ``1.0`` and reject every future candidate forever — flattening
+        NSGA-II's fitness landscape.
+
+        Fix: record the single-class shortcut and use a SAFE PROBABILITY
+        in :meth:`predict_invalid_probability`:
+
+        * all-valid (only class ``0`` seen) → return ``0.0`` (no
+          rejection — the prefilter is a no-op until both classes appear).
+        * all-invalid (only class ``1`` seen) → return ``None`` so the
+          prefilter wrapper degrades gracefully and lets candidates
+          through; subsequent runs add fresh labels and the freeze
+          self-corrects as soon as a single valid candidate is seen.
         """
         features = _to_feature_matrix(kracht_arrays)
         y = np.asarray(list(labels), dtype=int).ravel()
@@ -98,7 +111,7 @@ class ValidityClassifier:
         if unique_labels.size < 2:
             # sklearn.LogisticRegression requires at least two classes.
             # Record the single-class shortcut so predict_invalid_probability
-            # can still answer.
+            # can still answer with a SAFE probability (Bug #4 fix).
             self._trained_on_single_class = True
             self._model = float(unique_labels[0])
             return self
@@ -125,6 +138,13 @@ class ValidityClassifier:
         it was fit on fewer than :data:`MIN_TRAINING_SAMPLES` rows. Callers
         that get ``None`` should fall back to running the full evaluation
         (the history is simply too sparse to trust the predictor).
+
+        Bug #4 (audit 2026-04-26): when fit on a single class, the safe
+        replies are:
+
+        * only class ``0`` seen → ``0.0`` (no rejection).
+        * only class ``1`` seen → ``None`` so the prefilter degrades to
+          a no-op until at least one valid sample is observed.
         """
         if self._n_training_samples < MIN_TRAINING_SAMPLES:
             return None
@@ -133,11 +153,16 @@ class ValidityClassifier:
 
         row = _vector_to_row(vector)
         if self._trained_on_single_class:
-            # When history is degenerate (all valid or all invalid) the
-            # classifier replies with the majority-class probability. In
-            # practice the interesting case is "all valid so far" → return
-            # 0.0 so we don't reject anything.
-            return float(self._model)  # stored 0.0 or 1.0
+            # Single-class shortcut. ``self._model`` is the float of the
+            # only seen class — 0.0 or 1.0.
+            seen_label = float(self._model)
+            if seen_label <= 0.0:
+                # Only valid samples seen → don't reject anything.
+                return 0.0
+            # Only invalid samples seen → refuse to predict so the wrapper
+            # falls back to running the base evaluator. Returning 1.0
+            # would freeze NSGA-II in a flat penalty landscape (Bug #4).
+            return None
 
         # sklearn.LogisticRegression.classes_ is sorted ascending, so
         # invalid (=1) always ends up at index 1 when both classes exist.

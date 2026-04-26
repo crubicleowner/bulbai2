@@ -107,6 +107,59 @@ def test_classifier_single_class_history_returns_zero_probability():
     assert prob == pytest.approx(0.0)
 
 
+def test_classifier_does_not_freeze_when_all_history_is_invalid():
+    """All-invalid history must NOT lock the predictor at p=1.0.
+
+    Bug #4 (audit 2026-04-26): when the first 10 candidates all happen to
+    be invalid (e.g. a bad baseline mesh on the first night-run), the
+    classifier used to memorise ``float(1.0)`` and reject every future
+    candidate forever, freezing NSGA-II in a flat fitness landscape. The
+    safe behaviour is to either fall back to "no prediction" (None) or
+    return a probability low enough that the prefilter does not reject
+    everything.
+    """
+    samples, _ = _linear_label_sample(MIN_TRAINING_SAMPLES + 5, seed=11)
+    labels = [1] * len(samples)
+    clf = ValidityClassifier()
+    clf.fit(samples, labels)
+
+    prob = clf.predict_invalid_probability(samples[0])
+    assert prob is None or prob <= 0.5, (
+        f"all-invalid fit must not freeze at p=1.0 (got {prob!r})"
+    )
+
+
+def test_classifier_does_not_freeze_when_all_history_is_valid():
+    """All-valid history → predictor returns 0.0 or None (no rejection)."""
+    samples, _ = _linear_label_sample(MIN_TRAINING_SAMPLES + 5, seed=12)
+    labels = [0] * len(samples)
+    clf = ValidityClassifier()
+    clf.fit(samples, labels)
+
+    prob = clf.predict_invalid_probability(samples[0])
+    assert prob is None or prob == pytest.approx(0.0)
+
+
+def test_classifier_predicts_normally_when_both_classes_seen():
+    """Two-class fit produces probabilities that span the (0, 1) range."""
+    space = KrachtDesignSpace()
+    samples = space.sample(20, seed=13)
+    labels = [1] * 10 + [0] * 10
+    clf = ValidityClassifier()
+    clf.fit(samples, labels)
+
+    probs = []
+    for sample in samples:
+        prob = clf.predict_invalid_probability(sample)
+        assert prob is not None
+        assert 0.0 <= prob <= 1.0
+        probs.append(prob)
+
+    # Predictions should span (not all clamped to 0 or 1).
+    assert min(probs) < 0.9
+    assert max(probs) > 0.1
+
+
 def test_classifier_rejects_mismatched_lengths():
     samples, _ = _linear_label_sample(MIN_TRAINING_SAMPLES + 2, seed=5)
     clf = ValidityClassifier()

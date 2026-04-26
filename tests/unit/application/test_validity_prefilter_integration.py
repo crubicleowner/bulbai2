@@ -195,3 +195,72 @@ def test_validity_history_path_is_stable(tmp_path: Path):
     # Parent directory must NOT exist yet — we avoid littering empty
     # project roots with a hidden folder on dry-run flows.
     assert not path.parent.exists()
+
+
+def test_prefilter_does_not_reject_all_when_classifier_only_saw_invalid_history(
+    tmp_path: Path,
+):
+    """Bug #4 (audit 2026-04-26): when 15 all-invalid history rows are
+    pre-loaded, the freshly trained classifier must NOT freeze every
+    prediction at 1.0 and force every fresh candidate into the penalty
+    path. At least some of the 5 candidates must reach the base evaluator
+    so NSGA-II keeps a real fitness landscape to climb.
+    """
+    history_path = tmp_path / "validity_history.jsonl"
+    space = KrachtDesignSpace()
+    seed_samples = space.sample(15, seed=42)
+    with history_path.open("w", encoding="utf-8") as handle:
+        for sample in seed_samples:
+            row = {
+                "vector": [
+                    float(sample.values[name]) for name in KRACHT_PARAMETER_NAMES
+                ],
+                "invalid": 1,
+            }
+            handle.write(json.dumps(row) + "\n")
+
+    classifier = _load_and_train_validity_classifier(history_path)
+    # The classifier saw 15 all-invalid rows — Bug #4's freeze condition.
+
+    mesh = trimesh.creation.box(extents=(4.0, 1.5, 1.0))
+    region = _baseline_region(mesh)
+    deformer = BulbFFDDeformer(post_smoothing_iterations=0)
+    case_logger = _seed_log(tmp_path)
+
+    base_calls: List[KrachtVector] = []
+
+    def _base_evaluator(vectors):
+        for v in vectors:
+            base_calls.append(v)
+        return [[0.5, 0.05, 1.2] for _ in vectors]
+
+    wrapped = _with_validity_prefilter(
+        _base_evaluator,
+        classifier=classifier,
+        reject_threshold=0.7,
+        history_path=history_path,
+        baseline_mesh=mesh,
+        region=region,
+        deformer=deformer,
+        case_logger=case_logger,
+    )
+
+    fresh_samples = space.sample(5, seed=99)
+    rows = wrapped(fresh_samples)
+
+    assert len(rows) == 5
+    # The freeze bug (Bug #4) would have produced 5 all-penalty rows AND
+    # zero base-evaluator calls. After the fix, AT LEAST ONE candidate
+    # must reach the base evaluator. We use ``len(base_calls) > 0`` as
+    # the empirical proof the freeze is gone.
+    assert len(base_calls) > 0, (
+        "all 5 candidates were rejected — the all-invalid history "
+        "froze the prefilter, NSGA-II would see a flat landscape"
+    )
+
+    # Of the 5 returned rows, at least one must NOT be a penalty row.
+    non_penalty_rows = [r for r in rows if r != pytest.approx([1e9, 1e9, 1e9])]
+    assert len(non_penalty_rows) > 0, (
+        "all 5 rows were penalties — prefilter still freezes on "
+        "all-invalid history"
+    )

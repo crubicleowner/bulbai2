@@ -187,7 +187,6 @@ def run_night_optimization(
             path=config.history_path if config.history_path is not None else None
         )
         evidence_store = CFDEvidenceStore(_cfd_evidence_history_path(project_root))
-        history_rows = history_store.load_all()
         openfoam_available = (
             high_fidelity_evaluator is None and detect_openfoam_available()
         )
@@ -196,13 +195,24 @@ def run_night_optimization(
             if openfoam_available
             else ("external" if high_fidelity_evaluator is not None else "surrogate")
         )
+        # Bug #5 (audit 2026-04-26): older HistoryStore JSONLs hold a mix
+        # of "real OpenFOAM Cd" (~0.3-1.5) and "(beam*draft)/axial proxy"
+        # (~0.01-0.5) rows. Training one GP on both corrupts the kernel
+        # length-scales. Prefer rows tagged with the planned high-gate
+        # backend; only fall back to the full set when no clean rows
+        # exist (e.g. the very first run after upgrade), and even then
+        # only for warm-start, never for GP fit (see below).
+        history_rows = history_store.load_all()
+        history_rows_for_gp = history_store.load_all(
+            backend=planned_high_gate_backend
+        )
         settings_hash = _solver_settings_hash(backend=planned_high_gate_backend)
         surrogate_training_rows = (
             evidence_store.surrogate_training_pairs(
                 hull_fingerprint=hull_fingerprint,
                 settings_hash=settings_hash,
             )
-            + history_rows
+            + history_rows_for_gp
         )
         raw_warm_start_vectors = evidence_store.top_k_safe_warm_start(
             config.warm_start_top_k,
@@ -351,9 +361,16 @@ def run_night_optimization(
 
         # L1: append every high-fidelity (vector, cd) pair to the history
         # JSONL so the next night-run can warm-start from it.
+        # Bug #5 fix: tag every row with the high-gate backend so the GP
+        # surrogate can later filter to a single Cd scale (real OpenFOAM
+        # Cd vs the analytic proxy live in different ranges).
         for hf in _engineering_valid_candidates(result.high_fidelity_results):
             if hf.objectives:
-                history_store.record(hf.vector, cd=float(hf.objectives[0]))
+                history_store.record(
+                    hf.vector,
+                    cd=float(hf.objectives[0]),
+                    backend=high_gate_backend,
+                )
         case_logger.log_stage(
             stage="night_optimization",
             status="completed",
