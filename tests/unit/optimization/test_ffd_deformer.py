@@ -1046,3 +1046,68 @@ def test_post_repair_can_be_disabled_for_topology_invariant_tests() -> None:
         "post_repair=False must preserve exact vertex count for the "
         "bit-identical-vertex-array invariant"
     )
+
+
+def test_negative_volume_coef_produces_smaller_bulb() -> None:
+    """Audit 2026-04-26 — Add #1 smoke test: a negative ``volume_coef``
+    must shrink the bulb region's bounding-box volume relative to a
+    neutral (``volume_coef=0.0``) candidate. Mesh stays watertight.
+
+    Uses the icosphere baseline rather than the full hull so the test
+    is fast (no STL I/O) and bypasses adaptive subdivision so vertex
+    indices stay aligned across the two runs.
+    """
+    base = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    base.apply_scale([3.0, 1.0, 1.0])
+    region = _bulb_region_from_mesh(base)
+    primary = region["axis_index"]
+    axis_min = region["axis_min"]
+
+    neutral_vector = KrachtVector(
+        values={
+            "length_ratio":     0.020,
+            "breadth_ratio":    0.080,
+            "height_ratio":     0.300,
+            "axis_z_ratio":     0.250,
+            "longitudinal_pos": 0.500,
+            "cross_section_c":  0.500,
+            "volume_coef":       0.000,
+            "nose_sharpness":   0.500,
+        }
+    )
+    deflate_vector = KrachtVector(
+        values=dict(neutral_vector.values, volume_coef=-0.300)
+    )
+
+    deformer = BulbFFDDeformer(
+        force_port_starboard_symmetry=False,
+        post_smoothing_iterations=0,
+        adaptive_subdivision=False,
+        post_repair=False,
+        seam_smoothing_iterations=0,
+    )
+    neutral = deformer.deform(base, region, neutral_vector)
+    deflate = deformer.deform(base, region, deflate_vector)
+
+    # Bulb-region vertex bounding-box volume: a coarse but stable proxy
+    # for "how big is the bulb after deformation."
+    def bulb_bbox_volume(mesh: trimesh.Trimesh) -> float:
+        verts = np.asarray(mesh.vertices, dtype=float)
+        in_region = verts[:, primary] >= axis_min
+        if not in_region.any():
+            return 0.0
+        slab = verts[in_region]
+        spans = slab.max(axis=0) - slab.min(axis=0)
+        return float(np.prod(np.maximum(spans, 1e-9)))
+
+    vol_neutral = bulb_bbox_volume(neutral)
+    vol_deflate = bulb_bbox_volume(deflate)
+
+    assert vol_deflate < vol_neutral, (
+        f"negative volume_coef must shrink the bulb region; got "
+        f"deflate={vol_deflate:.6f} vs neutral={vol_neutral:.6f}"
+    )
+    assert deflate.is_watertight, (
+        "deflated bulb must remain watertight (volume_coef=-0.30 is well "
+        "inside the new lower bound)"
+    )

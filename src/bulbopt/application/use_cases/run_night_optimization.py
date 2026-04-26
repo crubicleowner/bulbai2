@@ -624,10 +624,13 @@ def _mid_gate_evaluator(
             # Pass the region's resolved beam_axis so the symmetry metric
             # mirrors around the actual port-starboard axis of the hull
             # (audit 2026-04-26: the default argmin(extents) heuristic
-            # picks the wrong axis on real ship hulls).
+            # picks the wrong axis on real ship hulls). Pass ``region``
+            # so the new bulb/aft self-intersection penalty (audit
+            # 2026-04-26 Add #3) can identify the bulb sub-mesh.
             mesh_quality = compute_mesh_quality(
                 deformed,
                 beam_axis=region.get("beam_axis"),
+                region=region,
             )
             manufacturability_penalty = _manufacturability_penalty(
                 design_space.manufacturability_warnings(vector)

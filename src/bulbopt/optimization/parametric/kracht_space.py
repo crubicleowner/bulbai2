@@ -42,7 +42,16 @@ _DEFAULT_BOUNDS: Dict[str, Tuple[float, float]] = {
     "axis_z_ratio":     (0.050, 0.500),
     "longitudinal_pos": (0.000, 1.000),
     "cross_section_c":  (0.250, 1.000),
-    "volume_coef":      (0.400, 0.900),
+    # Audit 2026-04-26 (Add #1): widened lower bound from +0.40 to -0.40
+    # so the optimizer can subtract bulb volume when the baseline hull
+    # already has too much. The FFD's offset multiplier is
+    # ``0.5 + volume_coef``, so values in ``[-0.40, 0.0)`` produce a
+    # smaller forward push than the previous minimum (multiplier 0.9).
+    # ``breadth_ratio`` and ``height_ratio`` stay non-negative because
+    # they're scaling fractions (not signed deltas) — see
+    # ``_kracht_to_lattice_offsets`` in ffd_deformer.py: a sign flip
+    # there is a behavioural change reserved for a future iteration.
+    "volume_coef":      (-0.400, 0.900),
     "nose_sharpness":   (0.050, 1.000),
 }
 
@@ -125,6 +134,13 @@ class KrachtDesignSpace:
             violations.append("aft_high_bulb_geometry_risk")
         if volume_coef > 0.88 and nose < 0.07:
             violations.append("high_volume_with_sharp_nose")
+        # Audit 2026-04-26 (Add #1): when the optimizer asks the FFD to
+        # *deflate* the bulb (volume_coef well below zero) AND simulta-
+        # neously demand a sharp nose tip, the resulting deformation
+        # inverts the forward-most lattice slab into the body of the
+        # bulb. Reject the pair as unmanufacturable.
+        if volume_coef < -0.30 and nose < 0.10:
+            violations.append("deflate_with_sharp_nose")
 
         return violations
 

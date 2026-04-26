@@ -23,7 +23,16 @@ def test_kracht_design_space_exposes_eight_parameters() -> None:
 
 
 def test_kracht_design_space_bounds_match_spec_ranges() -> None:
-    """Exact bounds from design spec §4.1 table."""
+    """Exact bounds from design spec §4.1 table.
+
+    Audit 2026-04-26 (Add #1): ``volume_coef`` is widened to allow
+    negative values so the optimizer can subtract bulb volume when the
+    baseline already has too much. ``breadth_ratio`` and
+    ``height_ratio`` remain non-negative because they are *fractions of
+    box size*, not signed deltas — flipping their sign is a behavioural
+    change for the FFD that the audit explicitly reserves for a future
+    iteration.
+    """
     space = KrachtDesignSpace()
     expected = {
         "length_ratio":     (0.010, 0.045),
@@ -32,7 +41,7 @@ def test_kracht_design_space_bounds_match_spec_ranges() -> None:
         "axis_z_ratio":     (0.050, 0.500),
         "longitudinal_pos": (0.000, 1.000),
         "cross_section_c":  (0.250, 1.000),
-        "volume_coef":      (0.400, 0.900),
+        "volume_coef":      (-0.400, 0.900),
         "nose_sharpness":   (0.050, 1.000),
     }
     for name, (lo, hi) in expected.items():
@@ -197,3 +206,72 @@ def test_kracht_design_space_to_array_preserves_declared_order() -> None:
     )
     array = space.to_array(vector)
     assert list(array) == [0.015, 0.020, 0.150, 0.100, 0.500, 0.500, 0.500, 0.500]
+
+
+# Audit 2026-04-26 — Add #1: negative volume_coef enables the optimizer to
+# subtract bulb volume from a baseline that already has too much. The new
+# bounds must still be exercised by ``sample`` and the new "deflate the
+# bulb into a sharp nose" pathology must be rejected by
+# ``constraint_violations``.
+
+
+def test_volume_coef_can_be_negative() -> None:
+    """Sample 100 vectors and verify the widened ``volume_coef`` bounds.
+
+    With the new lower bound ``-0.40`` at least one of 100 LHS-style
+    uniform samples should land on the negative side; all samples must
+    stay inside ``[-0.40, 0.90]``.
+    """
+    space = KrachtDesignSpace()
+    batch = space.sample(n=100, seed=12345)
+    coefs = [vector.values["volume_coef"] for vector in batch]
+    assert any(c < 0.0 for c in coefs), (
+        "expected at least one negative volume_coef sample with n=100"
+    )
+    assert min(coefs) >= -0.40 - 1e-9
+    assert max(coefs) <= 0.90 + 1e-9
+
+
+def test_negative_volume_coef_with_sharp_nose_is_rejected_by_constraint() -> None:
+    """Add #1 coupled constraint: ``volume_coef < -0.30`` AND
+    ``nose_sharpness < 0.10`` is unphysical (the FFD would invert the
+    nose tip into the body). The constraint must reject that pair, and
+    must accept the same negative ``volume_coef`` paired with a healthy
+    ``nose_sharpness``.
+    """
+    space = KrachtDesignSpace()
+    bad = KrachtVector(
+        values={
+            "length_ratio":     0.02,
+            "breadth_ratio":    0.08,
+            "height_ratio":     0.30,
+            "axis_z_ratio":     0.20,
+            "longitudinal_pos": 0.60,
+            "cross_section_c":  0.75,
+            "volume_coef":      -0.35,
+            "nose_sharpness":   0.05,
+        }
+    )
+    violations = space.constraint_violations(bad)
+    assert violations, (
+        "expected coupled constraint to reject volume_coef=-0.35 with "
+        f"nose_sharpness=0.05; got {violations!r}"
+    )
+    assert "deflate_with_sharp_nose" in violations or any(
+        "deflate" in v for v in violations
+    )
+
+    good = KrachtVector(
+        values={
+            "length_ratio":     0.02,
+            "breadth_ratio":    0.08,
+            "height_ratio":     0.30,
+            "axis_z_ratio":     0.20,
+            "longitudinal_pos": 0.60,
+            "cross_section_c":  0.75,
+            "volume_coef":      -0.35,
+            "nose_sharpness":   0.5,
+        }
+    )
+    assert space.validate(good) is True
+    assert space.constraint_violations(good) == []
