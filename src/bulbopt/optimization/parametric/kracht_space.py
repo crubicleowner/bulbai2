@@ -56,6 +56,26 @@ _DEFAULT_BOUNDS: Dict[str, Tuple[float, float]] = {
 }
 
 
+# Audit 2026-04-26 — Module C: bounds biased toward the empirically-
+# validated tiny/sharp Kracht region. A real CFD run on
+# ``docs/base_hull.stl`` showed the ``TINY_SHARP_KRACHT_VECTOR`` below
+# reduces Cd by 2.48 %, while the default Kracht bounds also include
+# large bulb regions that produce candidates 2x WORSE than baseline.
+# Tightening the search space toward the known-good region dramatically
+# improves sample efficiency for the night-optimization run.
+#
+# Only four dimensions are overridden; the rest inherit
+# ``_DEFAULT_BOUNDS`` so any future change to those defaults flows
+# through automatically.
+_TIGHTENED_BOUND_OVERRIDES: Dict[str, Tuple[float, float]] = {
+    "length_ratio":   (0.005, 0.030),  # was (0.010, 0.045) — drop wide-bulb upper end
+    "volume_coef":    (-0.400, 0.400),  # was (-0.400, 0.900) — drop heavy-inflate end
+    "nose_sharpness": (0.500, 1.000),   # was (0.050, 1.000) — drop round-dome end
+    # ``breadth_ratio``, ``height_ratio``, ``axis_z_ratio``,
+    # ``longitudinal_pos``, ``cross_section_c`` inherit defaults.
+}
+
+
 @dataclass(slots=True, frozen=True)
 class KrachtVector:
     """One concrete 8-parameter sample.
@@ -76,6 +96,20 @@ class KrachtDesignSpace:
     """
 
     bounds: Dict[str, Tuple[float, float]] = field(default_factory=lambda: dict(_DEFAULT_BOUNDS))
+
+    @classmethod
+    def tightened(cls) -> "KrachtDesignSpace":
+        """Return a space with bounds biased toward the known-good region.
+
+        The tightened bounds drop the wide-bulb upper end of
+        ``length_ratio``, the heavy-inflate end of ``volume_coef``, and
+        the round-dome end of ``nose_sharpness``. The remaining
+        dimensions inherit defaults — see ``_TIGHTENED_BOUND_OVERRIDES``
+        for the audit rationale.
+        """
+        merged = dict(_DEFAULT_BOUNDS)
+        merged.update(_TIGHTENED_BOUND_OVERRIDES)
+        return cls(bounds=merged)
 
     def sample(self, n: int, seed: int | None = None) -> List[KrachtVector]:
         """Uniform random sample of ``n`` vectors.
@@ -207,3 +241,21 @@ class KrachtDesignSpace:
             for name, value in zip(KRACHT_PARAMETER_NAMES, array, strict=True)
         }
         return KrachtVector(values=values)
+
+
+# Audit 2026-04-26 — Module C: empirically-validated -2.48 % Cd Kracht
+# vector from a real CFD run on ``docs/base_hull.stl``. Used as the
+# warm-start seed for the night-optimization GA and as the centroid of
+# the ``KrachtDesignSpace.tightened()`` search region.
+TINY_SHARP_KRACHT_VECTOR: KrachtVector = KrachtVector(
+    values={
+        "length_ratio":     0.005,
+        "breadth_ratio":    0.05,
+        "height_ratio":     0.10,
+        "axis_z_ratio":     0.25,
+        "longitudinal_pos": 0.5,
+        "cross_section_c":  0.8,
+        "volume_coef":      -0.20,
+        "nose_sharpness":   0.95,
+    }
+)

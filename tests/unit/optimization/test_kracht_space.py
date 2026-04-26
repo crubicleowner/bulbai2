@@ -10,6 +10,7 @@ import pytest
 
 from bulbopt.optimization.parametric.kracht_space import (
     KRACHT_PARAMETER_NAMES,
+    TINY_SHARP_KRACHT_VECTOR,
     KrachtDesignSpace,
     KrachtVector,
 )
@@ -275,3 +276,39 @@ def test_negative_volume_coef_with_sharp_nose_is_rejected_by_constraint() -> Non
     )
     assert space.validate(good) is True
     assert space.constraint_violations(good) == []
+
+
+# Audit 2026-04-26 — Module C: tightened bounds biased toward the
+# empirically-validated tiny/sharp Kracht vector that drove a -2.48% Cd
+# improvement on docs/base_hull.stl. The default bounds remain unchanged;
+# ``KrachtDesignSpace.tightened()`` is a purely additive factory that
+# returns a new space with bounds focussed on the known-good region.
+
+
+def test_tightened_bounds_drops_known_bad_regions() -> None:
+    """``tightened()`` removes the wide-bulb / round-dome / heavy-inflate
+    regions that empirically produce candidates 2x WORSE than baseline.
+    """
+    space = KrachtDesignSpace.tightened()
+    assert space.bounds["length_ratio"][1] <= 0.030
+    assert space.bounds["nose_sharpness"][0] >= 0.5
+    assert space.bounds["volume_coef"][1] <= 0.40
+
+    # Sampling must respect the tightened bounds — never produce
+    # length_ratio > 0.030.
+    batch = space.sample(n=200, seed=2026)
+    for vector in batch:
+        assert vector.values["length_ratio"] <= 0.030 + 1e-9
+
+
+def test_tiny_sharp_constant_is_within_tightened_bounds() -> None:
+    """The empirically-validated -2.48% Cd vector must lie inside the
+    tightened bounds (otherwise the tightened factory would exclude it).
+    """
+    space = KrachtDesignSpace.tightened()
+    for name in KRACHT_PARAMETER_NAMES:
+        lo, hi = space.bounds[name]
+        value = TINY_SHARP_KRACHT_VECTOR.values[name]
+        assert lo <= value <= hi, (
+            f"{name}={value} not within tightened bounds [{lo}, {hi}]"
+        )
