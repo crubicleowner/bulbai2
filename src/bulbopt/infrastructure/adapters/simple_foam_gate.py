@@ -69,14 +69,83 @@ class SimpleFoamHighFidelityGate:
         self._design_space = KrachtDesignSpace()
         Path(self.work_root).mkdir(parents=True, exist_ok=True)
 
-    def evaluate(self, vectors: Sequence[KrachtVector]) -> List[List[float]]:
+    def evaluate(
+        self,
+        vectors: Sequence[KrachtVector],
+        *,
+        froude_numbers: Sequence[float] | None = None,
+        froude_weights: Sequence[float] | None = None,
+    ) -> List[List[float]]:
+        """Evaluate ``vectors`` and return ``[aggregated_cd, vol_delta]`` rows.
+
+        Parameters
+        ----------
+        vectors:
+            KrachtVectors to evaluate.
+        froude_numbers:
+            Optional list of Froude numbers. When ``None`` (default) each
+            candidate runs simpleFoam once at the case-template default Fr
+            and the existing single-Fr behaviour is preserved bit-exactly.
+            When provided, each candidate runs simpleFoam once per Fr and
+            the per-Fr Cd values are aggregated as a weighted mean.
+        froude_weights:
+            Optional weights matching ``froude_numbers``. When ``None``,
+            uniform weights are used. The weights are normalised to sum
+            to 1.0 before aggregation.
+        """
+        normalised_weights = _normalise_froude_weights(
+            froude_numbers, froude_weights
+        )
         objectives: List[List[float]] = []
         for vector in vectors:
-            row = self._evaluate_one(vector)
+            if froude_numbers is None:
+                row = self._evaluate_one(vector)
+            else:
+                row = self._evaluate_one_multi_fr(
+                    vector,
+                    list(froude_numbers),
+                    list(normalised_weights or []),
+                )
             objectives.append(row)
         return objectives
 
-    def _evaluate_one(self, vector: KrachtVector) -> List[float]:
+    def _evaluate_one_multi_fr(
+        self,
+        vector: KrachtVector,
+        froude_numbers: list[float],
+        froude_weights: list[float],
+    ) -> List[float]:
+        """Run simpleFoam once per Fr, aggregate Cd as a weighted mean.
+
+        Volume delta is identical across Fr (geometry is invariant), so we
+        pick whichever value the per-Fr runs report (they agree).
+        """
+        per_fr_rows: list[List[float]] = []
+        for fr in froude_numbers:
+            row = self._evaluate_one(vector, froude_number=float(fr))
+            per_fr_rows.append(row)
+
+        # If every per-Fr row hit the same up-front penalty (constraint
+        # violation, STL invalid) the aggregate is just that penalty —
+        # bail out rather than mix penalty Cd into a weighted mean.
+        if all(row == [1e9, 1e9] for row in per_fr_rows):
+            return [1e9, 1e9]
+
+        cd_values = [row[0] for row in per_fr_rows]
+        vol_deltas = [row[1] for row in per_fr_rows]
+        aggregated_cd = sum(
+            w * cd for w, cd in zip(froude_weights, cd_values)
+        )
+        # Volume delta is geometry-only; pick the first valid one (they
+        # are all the same).
+        return [float(aggregated_cd), float(vol_deltas[0])]
+
+    def _evaluate_one(
+        self,
+        vector: KrachtVector,
+        *,
+        froude_number: float | None = None,
+    ) -> List[float]:
         constraint_violations = self._design_space.constraint_violations(vector)
         if constraint_violations:
             self.evaluation_records.append(
@@ -106,7 +175,15 @@ class SimpleFoamHighFidelityGate:
             )
             return [1e9, 1e9]
 
-        candidate_case_dir = Path(self.work_root) / candidate_id
+        # Default single-Fr path puts the candidate at work_root/<id> so
+        # the existing tests that watch per-candidate dirs still pass. For
+        # multi-Fr we drop into a per-Fr sub-dir so each simpleFoam run
+        # gets its own postProcessing tree.
+        if froude_number is None:
+            candidate_case_dir = Path(self.work_root) / candidate_id
+        else:
+            fr_label = f"fr_{froude_number:.4f}".replace(".", "p").replace("-", "m")
+            candidate_case_dir = Path(self.work_root) / candidate_id / fr_label
         candidate_case_dir.mkdir(parents=True, exist_ok=True)
 
         geometry_path = candidate_case_dir / "input" / "candidate.stl"
@@ -123,13 +200,17 @@ class SimpleFoamHighFidelityGate:
             "drag_proxy": float(drag_proxy),
             "volume_delta": float(volume_delta),
         }
+        if froude_number is not None:
+            record["froude_number"] = float(froude_number)
 
         try:
-            manifest = self.build_case(
-                candidate_case_dir,
-                best_candidate_id=candidate_id,
-                best_candidate_geometry_path=geometry_path,
-            )
+            build_kwargs: dict = {
+                "best_candidate_id": candidate_id,
+                "best_candidate_geometry_path": geometry_path,
+            }
+            if froude_number is not None:
+                build_kwargs["froude_number"] = float(froude_number)
+            manifest = self.build_case(candidate_case_dir, **build_kwargs)
             run_manifest = self.run_case(
                 candidate_case_dir / "working" / "openfoam_case",
                 case_manifest=manifest,
@@ -185,6 +266,37 @@ class SimpleFoamHighFidelityGate:
         record["objectives"] = list(objectives)
         self.evaluation_records.append(record)
         return objectives
+
+
+def _normalise_froude_weights(
+    froude_numbers: Sequence[float] | None,
+    froude_weights: Sequence[float] | None,
+) -> list[float] | None:
+    """Validate and normalise the per-Fr weights to sum to 1.0.
+
+    Returns ``None`` when ``froude_numbers`` is ``None`` (single-Fr path).
+    Raises ``ValueError`` when the inputs are inconsistent.
+    """
+    if froude_numbers is None:
+        return None
+    fr_list = list(froude_numbers)
+    if not fr_list:
+        raise ValueError("froude_numbers must contain at least one entry")
+    if froude_weights is None:
+        uniform = 1.0 / len(fr_list)
+        return [uniform for _ in fr_list]
+    weights = [float(w) for w in froude_weights]
+    if len(weights) != len(fr_list):
+        raise ValueError(
+            "froude_weights length must match froude_numbers length "
+            f"({len(weights)} vs {len(fr_list)})"
+        )
+    if any(w < 0.0 for w in weights):
+        raise ValueError("froude_weights entries must be non-negative")
+    total = sum(weights)
+    if total <= 0.0:
+        raise ValueError("froude_weights must have a positive sum")
+    return [w / total for w in weights]
 
 
 def _drag_proxy(mesh: trimesh.Trimesh, region: dict) -> float:
