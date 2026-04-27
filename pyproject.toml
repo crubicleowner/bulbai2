@@ -23,6 +23,14 @@ dependencies = [
 dev = [
   "pytest>=8.3",
 ]
+mesh-quality = [
+  # ACVD-based isotropic remeshing for the bulb tip
+  # (`bulbopt.optimization.parametric.anisotropic_remesh`). Optional
+  # because pyacvd pulls a Cython extension that not every laptop
+  # build environment can compile; the module degrades gracefully
+  # to a no-op when this dependency is missing.
+  "pyacvd>=0.2",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "bulbopt.__version__"}
