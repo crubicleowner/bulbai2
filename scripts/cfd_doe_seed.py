@@ -30,14 +30,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import statistics
 import sys
 import time
 import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -222,6 +224,146 @@ def _read_force_coeffs_cd(of_case_dir: Path) -> Optional[float]:
     return float(report["final_cd"])
 
 
+def _vectors_to_resume_keys(
+    vectors: Sequence[KrachtVector],
+    *,
+    digits: int = 12,
+) -> List[Tuple[float, ...]]:
+    """Map LHS vectors to round-tripped float tuples for resume comparison.
+
+    The LHS sampler is deterministic for a fixed ``(n, seed)`` pair, but
+    JSON round-trip through ``HistoryStore`` can introduce sub-ULP
+    rounding noise on the float values. We compare with the same number
+    of significant digits the JSONL store keeps, which is plenty more
+    than the 6-7 digits LHS strata actually need.
+    """
+    return [
+        tuple(round(float(v.values[name]), digits) for name in KRACHT_PARAMETER_NAMES)
+        for v in vectors
+    ]
+
+
+def _completed_indices_from_history(
+    history_path: Path,
+    samples: Sequence[KrachtVector],
+    *,
+    backend: str = "simple_foam",
+    digits: int = 9,
+) -> set[int]:
+    """Return the 0-based sample indices already recorded in ``history_path``.
+
+    A sample is considered completed when ``history_path`` contains a
+    row with the same ``backend`` and parameters that match within
+    ``10**-digits``. Used by ``--resume`` to skip already-evaluated
+    samples without re-running CFD.
+
+    Missing history file or empty history → empty set (nothing to skip).
+    """
+    if not history_path.exists():
+        return set()
+    store = HistoryStore(path=history_path)
+    rows = store.load_all(backend=backend)
+    if not rows:
+        return set()
+    sample_keys = _vectors_to_resume_keys(samples, digits=digits)
+    completed: set[int] = set()
+    for vec, _cd in rows:
+        row_key = tuple(
+            round(float(vec.values[name]), digits) for name in KRACHT_PARAMETER_NAMES
+        )
+        for index, sample_key in enumerate(sample_keys):
+            if index in completed:
+                continue
+            if all(
+                math.isclose(a, b, rel_tol=0.0, abs_tol=10 ** (-digits))
+                for a, b in zip(row_key, sample_key)
+            ):
+                completed.add(index)
+                break
+    return completed
+
+
+# ---------- parallel worker entry point -----------------------------------
+#
+# ``ProcessPoolExecutor`` requires a top-level (importable) callable so it
+# can pickle a reference to it on the parent side and resolve it by name
+# inside the child interpreter. Lambdas / closures don't survive that
+# round-trip on Windows, so the parallel chunk-runner lives at module
+# scope and rebuilds its own adapters instead of receiving them from the
+# parent.
+
+
+def _worker_run_chunk(payload: dict) -> List[dict]:
+    """Run one chunk of LHS samples in a fresh subprocess.
+
+    ``payload`` is a JSON-friendly dict with the per-chunk arguments
+    (case dir, baseline STL bytes, vectors as JSON, timeout, ...). We
+    intentionally re-instantiate the OpenFOAM adapters inside the
+    worker so each subprocess has a clean state — sharing them across
+    fork would not be safe given OpenFOAM's reliance on per-process
+    environment configuration.
+
+    Returns a list of per-sample manifest dicts (same shape as
+    ``_run_simple_foam_for_vector``).
+    """
+    case_dir = Path(payload["case_dir"])
+    work_root = Path(payload["work_root"])
+    doe_results_dir = Path(payload["doe_results_dir"])
+    repaired_path = Path(payload["repaired_stl"])
+    timeout_seconds = int(payload["timeout"])
+    items = payload["items"]
+    region = payload["region"]
+
+    # Lazy imports inside the worker so the parent's ``sys.path`` setup
+    # propagates and the child does not inherit any half-initialised
+    # state from the importer.
+    import trimesh as _trimesh
+    from bulbopt.infrastructure.adapters.openfoam_adapter import (
+        OpenFOAMAdapter as _OpenFOAMAdapter,
+    )
+    from bulbopt.infrastructure.adapters.openfoam_runner import (
+        OpenFOAMRunnerAdapter as _OpenFOAMRunnerAdapter,
+    )
+    from bulbopt.optimization.parametric.ffd_deformer import (
+        BulbFFDDeformer as _BulbFFDDeformer,
+    )
+    from bulbopt.optimization.parametric.kracht_space import (
+        KrachtVector as _KrachtVector,
+    )
+
+    baseline_mesh = _trimesh.load(repaired_path, force="mesh")
+    builder = _OpenFOAMAdapter()
+    runner = _OpenFOAMRunnerAdapter()
+    deformer = _BulbFFDDeformer()
+
+    out: List[dict] = []
+    for item in items:
+        label = item["label"]
+        vector = _KrachtVector(values={k: float(v) for k, v in item["vector"].items()})
+        manifest = _run_simple_foam_for_vector(
+            label=label,
+            vector=vector,
+            baseline_mesh=baseline_mesh,
+            region=region,
+            deformer=deformer,
+            builder=builder,
+            runner=runner,
+            work_root=work_root,
+            timeout_seconds=timeout_seconds,
+        )
+        manifest_path = doe_results_dir / f"{label}.json"
+        try:
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, default=str), encoding="utf-8"
+            )
+        except OSError:
+            # Persisting is best-effort inside a worker; the parent
+            # also re-writes the manifest after aggregation.
+            pass
+        out.append(manifest)
+    return out
+
+
 def _run_baseline_cd(
     *,
     baseline_mesh: trimesh.Trimesh,
@@ -313,7 +455,34 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the baseline CFD run (useful for resuming a partial sweep)",
     )
+    parser.add_argument(
+        "--parallel-workers",
+        type=int,
+        default=1,
+        help=(
+            "Run DOE samples concurrently across N subprocesses (default 1, "
+            "i.e. fully sequential — bit-identical to historical behaviour). "
+            "N>1 splits the LHS samples into N chunks and dispatches each to "
+            "its own ProcessPoolExecutor worker."
+        ),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Skip LHS samples whose KrachtVector already has a "
+            "simple_foam Cd row in --history-path. Use this to restart a "
+            "partial sweep without re-running the completed cases."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.parallel_workers < 1:
+        print(
+            f"--parallel-workers must be >= 1; got {args.parallel_workers}",
+            file=sys.stderr,
+        )
+        return 2
 
     if not os.environ.get("BULBOPT_OPENFOAM_BIN"):
         print(
@@ -371,39 +540,173 @@ def main(argv: list[str] | None = None) -> int:
     cd_values: list[float] = []
     n_succeeded = 0
     n_failed = 0
+    n_skipped = 0
 
-    for index, vector in enumerate(samples, start=1):
-        label = f"sample_{index:03d}"
-        print(f"== {label} ({index}/{len(samples)}) ==")
-        result = _run_simple_foam_for_vector(
-            label=label,
-            vector=vector,
-            baseline_mesh=baseline_mesh,
-            region=region,
-            deformer=deformer,
-            builder=builder,
-            runner=runner,
-            work_root=work_root,
-            timeout_seconds=args.timeout,
-        )
-        # Persist per-case manifest immediately so a crash mid-sweep does
-        # not lose evidence.
+    # ---- resume gate ------------------------------------------------------
+    completed_indices: set[int] = set()
+    if args.resume:
+        completed_indices = _completed_indices_from_history(history_path, samples)
+        if completed_indices:
+            print(
+                f"  --resume: {len(completed_indices)} of {len(samples)} samples "
+                f"already in history; will skip"
+            )
+
+    pending: List[Tuple[int, KrachtVector]] = [
+        (i, vec) for i, vec in enumerate(samples) if i not in completed_indices
+    ]
+    n_skipped = len(samples) - len(pending)
+
+    def _persist_result(
+        label: str,
+        vector: KrachtVector,
+        result: dict,
+        *,
+        prefix_label: bool = False,
+    ) -> None:
+        """Common path: write per-case manifest + maybe record in history.
+
+        ``prefix_label`` keeps the parallel-path log lines self-describing
+        (chunks complete out of order); the sequential path keeps the
+        original ``  Cd = X`` format so its log output is bit-identical
+        to the pre-refactor script.
+        """
+        nonlocal n_succeeded, n_failed
         manifest_path = doe_results_dir / f"{label}.json"
         manifest_path.write_text(
             json.dumps(result, indent=2, default=str), encoding="utf-8"
         )
-
         cd = result.get("cd")
-        if result["status"] == "succeeded" and cd is not None:
+        tag = f"{label}: " if prefix_label else ""
+        if result.get("status") == "succeeded" and cd is not None:
             history_store.record(vector, cd=float(cd), backend="simple_foam")
             cd_values.append(float(cd))
             n_succeeded += 1
-            print(f"  Cd = {cd:.4f}  (recorded in {history_path})")
+            print(f"  {tag}Cd = {cd:.4f}  (recorded in {history_path})")
         else:
             n_failed += 1
             print(
-                f"  FAILED: status={result['status']!r} reason={result.get('reason')!r}"
+                f"  {tag}FAILED: status={result.get('status')!r} "
+                f"reason={result.get('reason')!r}"
             )
+
+    if args.parallel_workers <= 1 or len(pending) <= 1:
+        # Sequential path: bit-identical to historical behaviour when
+        # ``--parallel-workers`` is omitted (default 1).
+        for index, vector in pending:
+            label = f"sample_{index + 1:03d}"
+            print(f"== {label} ({index + 1}/{len(samples)}) ==")
+            result = _run_simple_foam_for_vector(
+                label=label,
+                vector=vector,
+                baseline_mesh=baseline_mesh,
+                region=region,
+                deformer=deformer,
+                builder=builder,
+                runner=runner,
+                work_root=work_root,
+                timeout_seconds=args.timeout,
+            )
+            _persist_result(label, vector, result)
+    else:
+        # Parallel path: split pending samples into N chunks, dispatch
+        # each to a ProcessPoolExecutor worker, aggregate the manifests
+        # back here so history.jsonl writes happen in a single process.
+        workers = max(1, min(int(args.parallel_workers), len(pending)))
+        # Round-robin chunking so neighbouring LHS indices don't all
+        # land on the same worker (better utilisation if some samples
+        # take longer than others).
+        chunks: List[List[Tuple[int, KrachtVector]]] = [[] for _ in range(workers)]
+        for offset, (index, vector) in enumerate(pending):
+            chunks[offset % workers].append((index, vector))
+
+        repaired_path = case_dir / "working" / "repaired" / "repaired.stl"
+
+        payloads: List[dict] = []
+        for w_index, chunk in enumerate(chunks):
+            if not chunk:
+                continue
+            payloads.append(
+                {
+                    "case_dir": str(case_dir),
+                    "work_root": str(work_root),
+                    "doe_results_dir": str(doe_results_dir),
+                    "repaired_stl": str(repaired_path),
+                    "region": region,
+                    "timeout": int(args.timeout),
+                    "items": [
+                        {
+                            "label": f"sample_{i + 1:03d}",
+                            "vector": dict(vec.values),
+                            "index": i,
+                        }
+                        for i, vec in chunk
+                    ],
+                    "worker_id": w_index,
+                }
+            )
+
+        print(
+            f"== dispatching {len(pending)} samples across "
+            f"{len(payloads)} parallel workers =="
+        )
+        with ProcessPoolExecutor(max_workers=len(payloads)) as executor:
+            futures = {
+                executor.submit(_worker_run_chunk, payload): payload
+                for payload in payloads
+            }
+            for future in as_completed(futures):
+                payload = futures[future]
+                try:
+                    chunk_results = future.result()
+                except Exception as exc:  # pragma: no cover - defensive
+                    print(
+                        f"  worker {payload.get('worker_id')} crashed: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+                    # Mark every sample in the chunk as failed so we still
+                    # write their manifests.
+                    for item in payload["items"]:
+                        synthetic = {
+                            "label": item["label"],
+                            "vector": item["vector"],
+                            "cd": None,
+                            "status": "failed",
+                            "reason": f"worker_crashed: {type(exc).__name__}: {exc}",
+                        }
+                        vec = KrachtVector(
+                            values={k: float(v) for k, v in item["vector"].items()}
+                        )
+                        _persist_result(
+                            item["label"], vec, synthetic, prefix_label=True
+                        )
+                    continue
+                # Map back results to (index, vector) by label so we
+                # write history rows in the parent and avoid concurrent
+                # writers clobbering each other.
+                label_to_vec = {
+                    item["label"]: KrachtVector(
+                        values={k: float(v) for k, v in item["vector"].items()}
+                    )
+                    for item in payload["items"]
+                }
+                for result in chunk_results:
+                    label = result.get("label")
+                    vec = label_to_vec.get(label)
+                    if vec is None:
+                        # Fall back to reconstructing from result payload.
+                        try:
+                            vec = KrachtVector(
+                                values={
+                                    k: float(v)
+                                    for k, v in (result.get("vector") or {}).items()
+                                }
+                            )
+                        except Exception:  # pragma: no cover - defensive
+                            n_failed += 1
+                            continue
+                    _persist_result(label, vec, result, prefix_label=True)
 
     total_seconds = time.monotonic() - start_time
 
@@ -411,6 +714,7 @@ def main(argv: list[str] | None = None) -> int:
         "n": int(args.n),
         "n_succeeded": int(n_succeeded),
         "n_failed": int(n_failed),
+        "n_skipped_resume": int(n_skipped),
         "baseline_cd": float(baseline_cd) if baseline_cd is not None else None,
         "min_cd": float(min(cd_values)) if cd_values else None,
         "max_cd": float(max(cd_values)) if cd_values else None,
@@ -423,6 +727,8 @@ def main(argv: list[str] | None = None) -> int:
         "bounds": args.bounds,
         "seed": int(args.seed),
         "source_stl": str(source_stl),
+        "parallel_workers": int(args.parallel_workers),
+        "resume": bool(args.resume),
     }
     summary_path = case_dir / "seed_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -432,6 +738,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"DOE seed sweep complete in {total_seconds:.1f}s")
     print(f"  succeeded: {n_succeeded}/{args.n}")
     print(f"  failed:    {n_failed}/{args.n}")
+    if n_skipped:
+        print(f"  skipped (--resume): {n_skipped}/{args.n}")
     if baseline_cd is not None:
         print(f"  baseline Cd: {baseline_cd:.4f}")
     if cd_values:
