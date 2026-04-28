@@ -30,6 +30,13 @@ mesh-quality = [
   # build environment can compile; the module degrades gracefully
   # to a no-op when this dependency is missing.
   "pyacvd>=0.2",
+  # MeshLib-based edge-flip / split / collapse isotropic remeshing
+  # for the visual-only polish of top-candidate STL outputs
+  # (`bulbopt.optimization.parametric.isotropic_remesh`). Drops the
+  # bulb-region max aspect ratio from ~3650 to ~6 on the production
+  # hull while keeping the rest of the upper hull bit-identical. The
+  # module degrades gracefully to a no-op when meshlib is missing.
+  "meshlib>=3.1",
 ]
 
 [tool.setuptools.dynamic]

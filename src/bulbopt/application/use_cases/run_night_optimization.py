@@ -72,6 +72,10 @@ from bulbopt.optimization.learning.validity_classifier import (
 )
 from bulbopt.optimization.quality.mesh_metrics import compute_mesh_quality
 from bulbopt.optimization.parametric.ffd_deformer import BulbFFDDeformer
+from bulbopt.optimization.parametric.isotropic_remesh import (
+    is_isotropic_remesh_available,
+    remesh_region_isotropic,
+)
 from bulbopt.optimization.parametric.kracht_space import (
     KRACHT_PARAMETER_NAMES,
     KrachtDesignSpace,
@@ -153,6 +157,19 @@ class NightOptimizationConfig:
     # wrapped evaluator is not picklable (typical for closures over
     # trimesh meshes).
     parallel_workers: int = 1
+    # Visual-only post-processing flag for the top-candidate STL exports
+    # under ``outputs/top_candidates/candidate-XXX/geometry.stl``. When
+    # ``True`` the saved STL is run through
+    # :func:`bulbopt.optimization.parametric.isotropic_remesh.remesh_region_isotropic`
+    # (a meshlib-backed edge-flip / split / collapse remesher) which
+    # drops the bulb-region max aspect ratio from ~3650 to ~6 on the
+    # production hull while keeping the rest of the upper hull
+    # bit-identical to the deformed input. CFD-evaluated geometry is
+    # NOT touched — the polish runs only on the STL written to disk
+    # for visual review, so the GP training history stays consistent.
+    # Default ``False`` to keep behaviour identical to existing callers
+    # and CI runs that don't have ``meshlib`` installed.
+    apply_isotropic_polish_to_outputs: bool = False
 
 
 @dataclass(slots=True)
@@ -617,6 +634,7 @@ def run_night_optimization(
             repaired_mesh=repaired_mesh,
             region=region,
             deformer=deformer,
+            apply_isotropic_polish=config.apply_isotropic_polish_to_outputs,
         )
         rejected_candidates = _persist_rejected_candidate_meshes(
             case_dir=case_dir,
@@ -1887,12 +1905,24 @@ def _persist_top_candidate_meshes(
     repaired_mesh: trimesh.Trimesh,
     region: dict,
     deformer: BulbFFDDeformer,
+    apply_isotropic_polish: bool = False,
 ) -> tuple[str | None, List[dict]]:
     """Write deformed STL and companion ``stl_valid.json`` for each top
     candidate. Returns ``(winner_id, invalid_candidates)`` where
     ``invalid_candidates`` is a list of ``{candidate_id, report}`` for
     any STL that failed sanity checks so the caller can pass them to the
-    HTML template."""
+    HTML template.
+
+    When ``apply_isotropic_polish`` is ``True`` the STL written to disk
+    is also passed through
+    :func:`bulbopt.optimization.parametric.isotropic_remesh.remesh_region_isotropic`
+    — a visual-only polish that re-triangulates the bulb region into
+    near-equilateral triangles. The validity report is computed on the
+    *polished* mesh so the engineer sees what they're shipping.
+    The deformed (un-polished) mesh is what CFD operates on upstream
+    of this call, so this polish never affects optimisation or GP
+    training history.
+    """
     output_root = case_dir / "outputs" / "top_candidates"
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -1909,6 +1939,7 @@ def _persist_top_candidate_meshes(
     ])
     winner_id: str | None = None
     invalid_candidates: List[dict] = []
+    polish_active = apply_isotropic_polish and is_isotropic_remesh_available()
     for index, candidate in enumerate(ranked[:10], start=1):
         candidate_id = f"candidate-{index:03d}"
         if winner_id is None:
@@ -1916,6 +1947,11 @@ def _persist_top_candidate_meshes(
         candidate_dir = output_root / candidate_id
         candidate_dir.mkdir(parents=True, exist_ok=True)
         deformed = deformer.deform(repaired_mesh, region, candidate.vector)
+        if polish_active:
+            # Visual-only polish: shift the saved STL onto a clean
+            # isotropic triangulation in the bulb region. The deformed
+            # mesh that CFD evaluated upstream stays unchanged.
+            deformed = remesh_region_isotropic(deformed, region)
         (candidate_dir / "geometry.stl").write_bytes(
             trimesh.exchange.stl.export_stl(deformed)
         )
